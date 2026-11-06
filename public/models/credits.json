@@ -1,0 +1,56 @@
+{
+  "_comment": "Add or override 3D model attribution metadata here keyed by filename. Any Sketchfab .glb with embedded asset.extras is also read automatically.",
+  "defaults": {
+    "license": "CC BY 4.0",
+    "licenseFull": "Creative Commons Attribution 4.0 International",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "modifications": "Normalized 3D scale and axis orientation; applied real-time studio lighting and dynamic vinyl wrap projection on exterior body panels."
+  },
+  "models": {
+    "ford-transit-2016.glb": {
+      "title": "2016 Ford Transit with Interior",
+      "author": "asian3dmodel",
+      "authorUrl": "https://sketchfab.com/nguyenhoanglam20100609",
+      "sourceUrl": "https://sketchfab.com/3d-models/2016-ford-transit-with-interior-52f919aedaa1497a9c0395ec0ac63af1",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "modifications": "Normalized 3D scale and axis orientation; isolated exterior body shell for real-time vinyl wrap projection."
+    },
+    "ford-transit-connect-cargo-2014.glb": {
+      "title": "2014 Ford Transit Connect Cargo",
+      "author": "tonielpro520",
+      "authorUrl": "https://sketchfab.com/tonielpro520",
+      "sourceUrl": "https://sketchfab.com/3d-models/2014-ford-transit-connect-cargo-2a0e1d88bc6347df8f7d9960032d48f6",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "modifications": "Converted via GLTFExporter, normalized scale, and applied real-time studio clearcoat and vinyl wrap projection."
+    },
+    "ford-transit-courier-2025.glb": {
+      "title": "2025 Ford Transit Courier Trend 1.5",
+      "author": "007 (tangwang920)",
+      "authorUrl": "https://sketchfab.com/tangwang920",
+      "sourceUrl": "https://sketchfab.com/3d-models/2025-ford-transit-courier-trend-15-35eda1ceb34e48e5a72081a2f492691f",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "modifications": "Normalized 3D scale and converted CarPaint material from alpha-blend to opaque studio clearcoat for vinyl wrap projection."
+    },
+    "mercedes-benz-sprinter-2006.glb": {
+      "title": "Mercedes Benz Sprinter 2006",
+      "author": "Max",
+      "authorUrl": "https://sketchfab.com/Max-5532",
+      "sourceUrl": "https://sketchfab.com/3d-models/mercedes-benz-sprinter-2006-f69de1315bb049c8946d57f6006acd73",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "modifications": "Normalized 3D scale and mapped Carrosserie exterior body panels for real-time vinyl wrap projection."
+    },
+    "mercedes-benz_sprinter_2019.glb": {
+      "title": "2019 Mercedes-Benz Sprinter",
+      "author": "tonielpro520",
+      "authorUrl": "https://sketchfab.com/tonielpro520",
+      "sourceUrl": "https://sketchfab.com/3d-models/2019-mercedes-benz-sprinter-5788a290ddb5483fbbd5831aeef829a1",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "modifications": "Normalized 3D scale and applied real-time studio clearcoat and dynamic vinyl wrap projection on CarPaint panels."
+    }
+  }
+}

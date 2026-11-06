@@ -3,13 +3,67 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
 const CAMERA_PRESETS = [
-  { id: "hero", label: "Perspective", yaw: -0.64, pitch: 0.19, distance: 5.4 },
-  { id: "left", label: "Driver Side", yaw: 0.0, pitch: 0.08, distance: 5.3 },
-  { id: "right", label: "Passenger", yaw: Math.PI, pitch: 0.08, distance: 5.3 },
-  { id: "front", label: "Front", yaw: -Math.PI / 2, pitch: 0.11, distance: 5.1 },
-  { id: "rear", label: "Rear", yaw: Math.PI / 2, pitch: 0.11, distance: 5.1 },
-  { id: "roof", label: "Top View", yaw: -0.55, pitch: 0.85, distance: 5.7 },
+  { id: "hero", label: "Perspective", shortLabel: "3D", yaw: -0.64, pitch: 0.19, distance: 5.4 },
+  { id: "left", label: "Driver Side", shortLabel: "Left", yaw: 0.0, pitch: 0.08, distance: 5.3 },
+  { id: "right", label: "Passenger", shortLabel: "Right", yaw: Math.PI, pitch: 0.08, distance: 5.3 },
+  { id: "front", label: "Front", shortLabel: "Front", yaw: -Math.PI / 2, pitch: 0.11, distance: 5.1 },
+  { id: "rear", label: "Rear", shortLabel: "Rear", yaw: Math.PI / 2, pitch: 0.11, distance: 5.1 },
+  { id: "roof", label: "Top View", shortLabel: "Top", yaw: -0.55, pitch: 0.85, distance: 5.7 },
 ];
+
+function CameraAngleIcon({ presetId }) {
+  switch (presetId) {
+    case "left":
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2.5 15V9.5L6 6.5h11.5a2 2 0 0 1 2 2V15H2.5Z" />
+          <circle cx="7" cy="15.5" r="2" />
+          <circle cx="16.5" cy="15.5" r="2" />
+        </svg>
+      );
+    case "right":
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21.5 15V9.5L18 6.5H6.5a2 2 0 0 0-2 2V15h17Z" />
+          <circle cx="7.5" cy="15.5" r="2" />
+          <circle cx="17" cy="15.5" r="2" />
+        </svg>
+      );
+    case "front":
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="5" y="5" width="14" height="11" rx="2.5" />
+          <path d="M5 11h14" />
+          <path d="M7 16v2.5M17 16v2.5" />
+          <circle cx="8" cy="13.5" r="1" />
+          <circle cx="16" cy="13.5" r="1" />
+        </svg>
+      );
+    case "rear":
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="5" y="5" width="14" height="11" rx="2" />
+          <path d="M12 5v11" />
+          <path d="M7 16v2.5M17 16v2.5" />
+        </svg>
+      );
+    case "roof":
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="6" y="3" width="12" height="18" rx="3" />
+          <path d="M6 8.5h12M6 16.5h12" />
+        </svg>
+      );
+    case "hero":
+    default:
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 3 20 7.5v9L12 21l-8-4.5v-9L12 3Z" />
+          <path d="M12 12 20 7.5M12 12v9M12 12 4 7.5" />
+        </svg>
+      );
+  }
+}
 
 const VEHICLE_ICON_OPTIONS = [
   { id: "cargo-van", label: "Cargo Van" },
@@ -353,13 +407,13 @@ function mat4FromTRS(t = [0, 0, 0], q = [0, 0, 0, 1], s = [1, 1, 1]) {
   ]);
 }
 
-function mat4PerspectiveOffset(fovy, aspect, near, far, offsetX = 0) {
+function mat4PerspectiveOffset(fovy, aspect, near, far, offsetX = 0, offsetY = 0) {
   const f = 1.0 / Math.tan(fovy / 2);
   const nf = 1 / (near - far);
   return new Float32Array([
     f / aspect, 0, 0, 0,
     0, f, 0, 0,
-    offsetX, 0, (far + near) * nf, -1,
+    offsetX, offsetY, (far + near) * nf, -1,
     0, 0, 2 * far * near * nf, 0,
   ]);
 }
@@ -1087,9 +1141,19 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
   const [isSavingWrap, setIsSavingWrap] = useState(false);
   const [wrapModalError, setWrapModalError] = useState("");
 
+  // 3D Model Credits (CC BY) Modal State
+  const [isCreditsModalOpen, setIsCreditsModalOpen] = useState(false);
+  const [creditsViewMode, setCreditsViewMode] = useState("active"); // "active" | "all"
+  const [copiedCreditId, setCopiedCreditId] = useState("");
+
+  // Mobile Collapsible Wrap Bottom Sheet State
+  const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
+
   const canvasRef = useRef(null);
   const pickerRef = useRef(null);
   const glStateRef = useRef(null);
+  const pointersRef = useRef(new Map());
+  const pinchDistRef = useRef(0);
   const cameraRef = useRef({
     yaw: -0.64,
     pitch: 0.19,
@@ -1318,25 +1382,34 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
       cam.pitch += (cam.targetPitch - cam.pitch) * 0.12;
       cam.distance += (cam.targetDistance - cam.distance) * 0.12;
 
+      const aspect = w / h;
+      const isDesktop = canvas.clientWidth > 960;
+
+      // Adapt effective distance on narrow/portrait viewports so the full vehicle fits comfortably without feeling overly zoomed-in
+      const aspectScale =
+        aspect < 1.25 ? Math.min(2.35, 1.22 / Math.max(aspect, 0.42)) : 1.0;
+      const effectiveDistance = cam.distance * aspectScale;
+
       const cosP = Math.cos(cam.pitch);
       const sinP = Math.sin(cam.pitch);
       const eye = [
-        cam.distance * cosP * Math.cos(cam.yaw),
-        cam.distance * sinP + 0.04,
-        cam.distance * cosP * Math.sin(cam.yaw),
+        effectiveDistance * cosP * Math.cos(cam.yaw),
+        effectiveDistance * sinP + 0.04,
+        effectiveDistance * cosP * Math.sin(cam.yaw),
       ];
 
-      // Optically shift the frustum slightly left on desktop so the vehicle centers in the open canvas area left of the floating inspector
-      const isDesktop = canvas.clientWidth > 960;
+      // Optically shift the frustum slightly left on desktop, or slightly vertically on mobile between header and bottom dock
       const frustumOffsetX = isDesktop ? 320 / canvas.clientWidth : 0;
+      const frustumOffsetY = isDesktop ? 0 : 0.03;
 
       // 25-degree telephoto studio lens for zero wide-angle distortion
       const proj = mat4PerspectiveOffset(
         (25 * Math.PI) / 180,
-        w / h,
+        aspect,
         0.1,
-        50.0,
-        frustumOffsetX
+        80.0,
+        frustumOffsetX,
+        frustumOffsetY
       );
       const viewMat = mat4LookAt(eye, [0, -0.02, 0], [0, 1, 0]);
       const modelMat = mat4Identity();
@@ -1556,16 +1629,42 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
   function handlePointerDown(e) {
     const cam = cameraRef.current;
-    cam.isDragging = true;
-    cam.lastX = e.clientX;
-    cam.lastY = e.clientY;
-    setActivePreset("");
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     e.currentTarget.setPointerCapture?.(e.pointerId);
+
+    if (pointersRef.current.size === 1) {
+      cam.isDragging = true;
+      cam.lastX = e.clientX;
+      cam.lastY = e.clientY;
+      setActivePreset("");
+    } else if (pointersRef.current.size === 2) {
+      cam.isDragging = false;
+      const pts = [...pointersRef.current.values()];
+      pinchDistRef.current = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    }
   }
 
   function handlePointerMove(e) {
     const cam = cameraRef.current;
-    if (!cam.isDragging) return;
+    if (pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    if (pointersRef.current.size === 2) {
+      const pts = [...pointersRef.current.values()];
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      if (pinchDistRef.current > 0) {
+        const delta = pinchDistRef.current - dist;
+        cam.targetDistance = Math.max(
+          2.8,
+          Math.min(10.5, cam.targetDistance + delta * 0.018)
+        );
+      }
+      pinchDistRef.current = dist;
+      return;
+    }
+
+    if (!cam.isDragging || pointersRef.current.size > 1) return;
     const dx = e.clientX - cam.lastX;
     const dy = e.clientY - cam.lastY;
     cam.lastX = e.clientX;
@@ -1576,18 +1675,29 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
   }
 
   function handlePointerUp(e) {
-    cameraRef.current.isDragging = false;
+    pointersRef.current.delete(e.pointerId);
+    pinchDistRef.current = 0;
     e.currentTarget.releasePointerCapture?.(e.pointerId);
+
+    const cam = cameraRef.current;
+    if (pointersRef.current.size === 1) {
+      const remaining = [...pointersRef.current.values()][0];
+      cam.lastX = remaining.x;
+      cam.lastY = remaining.y;
+      cam.isDragging = true;
+    } else if (pointersRef.current.size === 0) {
+      cam.isDragging = false;
+    }
   }
 
   function handleWheel(e) {
     const cam = cameraRef.current;
-    cam.targetDistance = Math.max(3.4, Math.min(8.2, cam.targetDistance + e.deltaY * 0.0028));
+    cam.targetDistance = Math.max(2.8, Math.min(10.5, cam.targetDistance + e.deltaY * 0.0028));
   }
 
   function adjustZoom(delta) {
     const cam = cameraRef.current;
-    cam.targetDistance = Math.max(3.4, Math.min(8.2, cam.targetDistance + delta));
+    cam.targetDistance = Math.max(2.8, Math.min(10.5, cam.targetDistance + delta));
   }
 
   function selectPreset(preset) {
@@ -1878,24 +1988,45 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
       {/* Top-Left Floating Architectural Bar: Minimal Brand + Apple-style Custom Vehicle Picker */}
       <header className="floating-header" ref={pickerRef}>
-        <div className="brand-badge">
-          <span className="brand-emblem" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path
-                d="M12 2L21 7V17L12 22L3 17V7L12 2Z"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M12 22V12M12 12L21 7M12 12L3 7"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeOpacity="0.5"
-              />
+        <div className="header-brand-row">
+          <div className="brand-badge">
+            <span className="brand-emblem" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M12 2L21 7V17L12 22L3 17V7L12 2Z"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M12 22V12M12 12L21 7M12 12L3 7"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeOpacity="0.5"
+                />
+              </svg>
+            </span>
+            <span className="brand-title">Vehicle Wrap Studio</span>
+          </div>
+
+          <button
+            type="button"
+            className="header-cc-btn is-mobile-only"
+            onClick={() => {
+              setIsPickerOpen(false);
+              setCreditsViewMode(activeModel?.credit ? "active" : "all");
+              setIsCreditsModalOpen(true);
+            }}
+            title="View 3D Model Credits & CC BY Licenses"
+            aria-label="View 3D model license and creator credits"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="9.5" />
+              <path d="M10.2 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+              <path d="M15.8 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
             </svg>
-          </span>
-          <span className="brand-title">Vehicle Wrap Studio</span>
+            <span>{activeModel?.credit ? "CC BY" : "Credits"}</span>
+          </button>
         </div>
 
         <div className="header-divider" />
@@ -2016,6 +2147,31 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
             </div>
           )}
         </div>
+
+        {/* CC BY Attribution Badge next to the selected vehicle (Desktop) */}
+        {activeModel?.credit && (
+          <>
+            <div className="header-divider" />
+            <button
+              type="button"
+              className="header-cc-btn is-desktop-only"
+              onClick={() => {
+                setIsPickerOpen(false);
+                setCreditsViewMode("active");
+                setIsCreditsModalOpen(true);
+              }}
+              title={`View ${activeModel.credit.license || "CC BY 4.0"} attribution for ${activeModel.name}`}
+              aria-label="View 3D model license and creator credits"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="9.5" />
+                <path d="M10.2 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+                <path d="M15.8 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+              </svg>
+              <span>CC BY</span>
+            </button>
+          </>
+        )}
       </header>
 
       {/* Apple-Style Local 3D Vehicle (.glb) Import Modal */}
@@ -2152,8 +2308,13 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
               type="button"
               className={`dock-pill${activePreset === preset.id ? " is-active" : ""}`}
               onClick={() => selectPreset(preset)}
+              title={preset.label}
             >
-              {preset.label}
+              <span className="dock-pill-icon" aria-hidden="true">
+                <CameraAngleIcon presetId={preset.id} />
+              </span>
+              <span className="dock-label-full">{preset.label}</span>
+              <span className="dock-label-short">{preset.shortLabel}</span>
             </button>
           ))}
         </div>
@@ -2187,8 +2348,81 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
         </div>
       </nav>
 
-      {/* Floating Right Glass Inspector Panel */}
-      <aside className="floating-inspector" aria-label="Wrap selection">
+      {/* Floating Right Glass Inspector Panel (Collapsible Bottom Sheet on Mobile) */}
+      <aside
+        className={`floating-inspector${isMobileSheetOpen ? " is-sheet-open" : ""}`}
+        aria-label="Wrap selection"
+      >
+        {/* Mobile Collapsible Bottom Sheet Handle & Quick Bar */}
+        <div className="mobile-sheet-bar">
+          <button
+            type="button"
+            className="mobile-sheet-grabber-btn"
+            onClick={() => setIsMobileSheetOpen((open) => !open)}
+            aria-expanded={isMobileSheetOpen}
+          >
+            <span className="sheet-grabber-pill" />
+          </button>
+
+          <div className="mobile-sheet-summary">
+            <button
+              type="button"
+              className="mobile-sheet-active-wrap"
+              onClick={() => setIsMobileSheetOpen((open) => !open)}
+            >
+              <span
+                className={`mobile-sheet-swatch${!activeWrap ? " swatch-factory" : ""}`}
+                style={
+                  activeWrap
+                    ? { backgroundImage: `url("${activeWrap.thumbUrl || activeWrap.url}")` }
+                    : undefined
+                }
+              />
+              <span className="mobile-sheet-text">
+                <span className="mobile-sheet-eyebrow">
+                  Wrap Collection ({wraps.length + 1})
+                </span>
+                <span className="mobile-sheet-title">
+                  {activeWrap ? activeWrap.name : "Factory Pearl White"}
+                </span>
+              </span>
+            </button>
+
+            <div className="mobile-sheet-actions">
+              <button
+                type="button"
+                className="mobile-import-quick-btn"
+                onClick={openWrapImportModal}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                <span>Import</span>
+              </button>
+
+              <button
+                type="button"
+                className="mobile-sheet-toggle-btn"
+                onClick={() => setIsMobileSheetOpen((open) => !open)}
+                aria-label={isMobileSheetOpen ? "Minimize wrap panel" : "Expand wrap panel"}
+              >
+                <span>{isMobileSheetOpen ? "Hide" : "Wraps"}</span>
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.3"
+                  className={isMobileSheetOpen ? "is-rotated" : ""}
+                >
+                  <path d="m18 15-6-6-6 6" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div className="inspector-header">
           <span className="inspector-eyebrow">Exterior Finish</span>
           <div className="inspector-title-row">
@@ -2583,6 +2817,191 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                 )}
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Persistent Bottom-Left 3D Model Credits (CC BY) Link */}
+      <button
+        type="button"
+        className="floating-credits-link"
+        onClick={() => {
+          setCreditsViewMode(activeModel?.credit ? "active" : "all");
+          setIsCreditsModalOpen(true);
+        }}
+        title="View 3D Model Credits & CC BY Licenses"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="12" cy="12" r="9.5" />
+          <path d="M10.2 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+          <path d="M15.8 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+        </svg>
+        <span>3D Model Credits</span>
+      </button>
+
+      {/* Apple-Style 3D Model Credits & CC BY Attribution Modal */}
+      {isCreditsModalOpen && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setIsCreditsModalOpen(false)}
+        >
+          <div
+            className="vehicle-modal credits-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="credits-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <span className="modal-eyebrow">Creative Commons Attribution</span>
+                <h2 id="credits-modal-title">3D Model Credits</h2>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setIsCreditsModalOpen(false)}
+                aria-label="Close modal"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="credits-tabs" role="tablist">
+              {activeModel?.credit && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={creditsViewMode === "active"}
+                  className={`wrap-mode-tab${creditsViewMode === "active" ? " is-active" : ""}`}
+                  onClick={() => setCreditsViewMode("active")}
+                >
+                  <span>Selected Vehicle</span>
+                </button>
+              )}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={creditsViewMode === "all" || !activeModel?.credit}
+                className={`wrap-mode-tab${
+                  creditsViewMode === "all" || !activeModel?.credit ? " is-active" : ""
+                }`}
+                onClick={() => setCreditsViewMode("all")}
+              >
+                <span>All Studio Models ({models.filter((m) => m.credit).length})</span>
+              </button>
+            </div>
+
+            <div className="credits-list">
+              {(creditsViewMode === "active" && activeModel?.credit
+                ? [activeModel]
+                : models.filter((m) => m.credit)
+              ).map((model) => {
+                const c = model.credit;
+                if (!c) return null;
+                const attributionText = `"${c.title}" (${c.sourceUrl || "Sketchfab"}) by ${
+                  c.author
+                } (${c.authorUrl || "Sketchfab"}) is licensed under ${c.license} (${
+                  c.licenseUrl
+                }). Modifications: ${c.modifications}`;
+                const isCopied = copiedCreditId === model.id;
+
+                return (
+                  <div key={model.id} className="credit-card">
+                    <div className="credit-card-top">
+                      <div className="credit-title-group">
+                        <span className="credit-model-name">{model.name}</span>
+                        <span className="credit-original-title">Original: “{c.title}”</span>
+                      </div>
+                      <a
+                        href={c.licenseUrl || "https://creativecommons.org/licenses/by/4.0/"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="credit-license-pill"
+                        title={c.licenseFull || "Creative Commons Attribution 4.0 International"}
+                      >
+                        {c.license || "CC BY 4.0"} ↗
+                      </a>
+                    </div>
+
+                    <div className="credit-meta-grid">
+                      <div className="credit-meta-row">
+                        <span className="credit-meta-label">Creator</span>
+                        {c.authorUrl ? (
+                          <a
+                            href={c.authorUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="credit-meta-link"
+                          >
+                            {c.author} ↗
+                          </a>
+                        ) : (
+                          <span className="credit-meta-val">{c.author}</span>
+                        )}
+                      </div>
+
+                      {c.sourceUrl && (
+                        <div className="credit-meta-row">
+                          <span className="credit-meta-label">Sketchfab Source</span>
+                          <a
+                            href={c.sourceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="credit-meta-link"
+                          >
+                            View Original 3D Model on Sketchfab ↗
+                          </a>
+                        </div>
+                      )}
+
+                      <div className="credit-meta-row">
+                        <span className="credit-meta-label">License</span>
+                        <a
+                          href={c.licenseUrl || "https://creativecommons.org/licenses/by/4.0/"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="credit-meta-link"
+                        >
+                          {c.licenseFull || "Creative Commons Attribution 4.0 International"} ({c.license}) ↗
+                        </a>
+                      </div>
+
+                      <div className="credit-meta-row is-changes">
+                        <span className="credit-meta-label">Modifications</span>
+                        <span className="credit-meta-val">{c.modifications}</span>
+                      </div>
+                    </div>
+
+                    <div className="credit-card-footer">
+                      <button
+                        type="button"
+                        className="credit-copy-btn"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(attributionText);
+                          setCopiedCreditId(model.id);
+                          setTimeout(() => setCopiedCreditId(""), 2000);
+                        }}
+                      >
+                        {isCopied ? "✓ Attribution Copied" : "Copy Attribution Text"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="modal-btn-primary"
+                onClick={() => setIsCreditsModalOpen(false)}
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       )}
