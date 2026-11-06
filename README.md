@@ -1,8 +1,6 @@
-# Wrap Studio
+# Vehicle Wrap Studio
 
-A lightweight Next.js vehicle preview studio. Browse commercial vans, compare
-viewing angles, and preview a selection of paint finishes in a clean,
-responsive interface.
+An interactive 3D WebGL commercial fleet wrap studio and finish configurator built with Next.js.
 
 ## Requirements
 
@@ -11,19 +9,21 @@ responsive interface.
 ## Getting started
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to use the studio.
 
 ## Available commands
 
-- `npm run dev` — start the local development server
-- `npm run build` — create a production build
-- `npm start` — serve a production build
-- `npm run lint` — check the application with ESLint
+- `pnpm run dev` — start the local development server
+- `pnpm run build` — create a production build
+- `pnpm start` — serve a production build
+- `pnpm run lint` — check the application with ESLint
 
-Vehicle photos are stored in `public/vehicles`. Camera angles can be selected
-from the view thumbnails or the previous/next buttons; the preview does not
-react to pointer movement.
+## Project Structure
+
+- `public/models/` — Default 3D vehicle models (`.glb`) and `credits.json` CC BY 4.0 attribution manifest.
+- `public/wraps/` — Default full-body vinyl wrap textures (`.svg`, `.png`, `.jpg`, `.webp`).
+- `public/templates/` — Reference 2:1 unfolded vehicle skin template (`unfolded-wrap-reference.png`).

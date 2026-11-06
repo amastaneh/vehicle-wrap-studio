@@ -1187,6 +1187,17 @@ const WRAP_CALIBRATION_CONTROLS = [
   { key: "sillOffsetY", label: "Sill Height", min: 0.00, max: 0.32, step: 0.005 },
 ];
 
+const EXTERNAL_MODEL_PROVIDERS = [
+  { name: "Sketchfab", url: "https://sketchfab.com" },
+  { name: "CGTrader", url: "https://www.cgtrader.com" },
+  { name: "Fab", url: "https://www.fab.com" },
+  { name: "TurboSquid", url: "https://www.turbosquid.com" },
+  { name: "3D Warehouse", url: "https://3dwarehouse.sketchup.com" },
+  { name: "Free3D", url: "https://free3d.com" },
+  { name: "Blend Swap", url: "https://blendswap.com" },
+  { name: "Poly Pizza", url: "https://poly.pizza" },
+];
+
 export default function WrapStudioClient({ initialModels, initialWraps }) {
   const [models, setModels] = useState(initialModels || []);
   const [wraps, setWraps] = useState(initialWraps || []);
@@ -1199,6 +1210,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
   // Add Custom GLB Vehicle Modal State
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [addVehicleTab, setAddVehicleTab] = useState("upload"); // "upload" | "discover"
   const [pendingGlbFile, setPendingGlbFile] = useState(null);
   const [pendingModelName, setPendingModelName] = useState("");
   const [pendingModelIcon, setPendingModelIcon] = useState("cargo-van");
@@ -2156,6 +2168,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
     setPendingGlbFile(null);
     setPendingModelName("");
     setPendingModelIcon("cargo-van");
+    setAddVehicleTab("upload");
     setModalError("");
     setIsAddModalOpen(true);
   }
@@ -2469,7 +2482,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
         )}
       </header>
 
-      {/* Apple-Style Local 3D Vehicle (.glb) Import Modal */}
+      {/* Apple-Style Local 3D Vehicle (.glb) Import & Model Directory Modal */}
       {isAddModalOpen && (
         <div
           className="modal-backdrop"
@@ -2485,7 +2498,9 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
             <div className="modal-header">
               <div>
                 <span className="modal-eyebrow">Local Browser Library</span>
-                <h2 id="add-vehicle-modal-title">Add 3D Vehicle (.glb)</h2>
+                <h2 id="add-vehicle-modal-title">
+                  {addVehicleTab === "discover" ? "Find 3D Vehicle Models" : "Add 3D Vehicle (.glb)"}
+                </h2>
               </div>
               <button
                 type="button"
@@ -2499,97 +2514,215 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
               </button>
             </div>
 
-            <form className="modal-form" onSubmit={handleSaveCustomVehicle}>
-              {/* Step 1: Choose .glb file */}
-              <label
-                className={`glb-dropzone${pendingGlbFile ? " has-file" : ""}`}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const f = e.dataTransfer?.files?.[0];
-                  if (f) handleGlbFilePicked(f);
+            {/* 2-Tab Segmented Control: Upload .glb File vs Find 3D Vehicle Models */}
+            <div className="wrap-mode-tabs" role="tablist" aria-label="3D vehicle source">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={addVehicleTab === "upload"}
+                className={`wrap-mode-tab${addVehicleTab === "upload" ? " is-active" : ""}`}
+                onClick={() => {
+                  setAddVehicleTab("upload");
+                  setModalError("");
                 }}
               >
-                <input
-                  type="file"
-                  accept=".glb,.gltf,model/gltf-binary,model/gltf+json"
-                  onChange={(e) => handleGlbFilePicked(e.target.files?.[0])}
-                  hidden
-                />
-                <span className="dropzone-icon" aria-hidden="true">
-                  <VehicleIcon iconId={pendingModelIcon} size={22} />
-                </span>
-                {pendingGlbFile ? (
-                  <span className="dropzone-meta">
-                    <span className="dropzone-filename">{pendingGlbFile.name}</span>
-                    <span className="dropzone-hint">
-                      {(pendingGlbFile.size / (1024 * 1024)).toFixed(1)} MB · Stored locally in your browser
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                <span>Upload .glb File</span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                aria-selected={addVehicleTab === "discover"}
+                className={`wrap-mode-tab${addVehicleTab === "discover" ? " is-active" : ""}`}
+                onClick={() => {
+                  setAddVehicleTab("discover");
+                  setModalError("");
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="9.5" />
+                  <path d="M2.5 12h19" />
+                  <path d="M12 2.5a14.5 14.5 0 0 1 0 19 14.5 14.5 0 0 1 0-19" />
+                </svg>
+                <span>Find 3D Models</span>
+              </button>
+            </div>
+
+            {addVehicleTab === "upload" ? (
+              <form className="modal-form" onSubmit={handleSaveCustomVehicle}>
+                {/* Step 1: Choose .glb file */}
+                <label
+                  className={`glb-dropzone${pendingGlbFile ? " has-file" : ""}`}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const f = e.dataTransfer?.files?.[0];
+                    if (f) handleGlbFilePicked(f);
+                  }}
+                >
+                  <input
+                    type="file"
+                    accept=".glb,.gltf,model/gltf-binary,model/gltf+json"
+                    onChange={(e) => handleGlbFilePicked(e.target.files?.[0])}
+                    hidden
+                  />
+                  <span className="dropzone-icon" aria-hidden="true">
+                    <VehicleIcon iconId={pendingModelIcon} size={22} />
+                  </span>
+                  {pendingGlbFile ? (
+                    <span className="dropzone-meta">
+                      <span className="dropzone-filename">{pendingGlbFile.name}</span>
+                      <span className="dropzone-hint">
+                        {(pendingGlbFile.size / (1024 * 1024)).toFixed(1)} MB · Stored locally in your browser
+                      </span>
                     </span>
-                  </span>
-                ) : (
-                  <span className="dropzone-meta">
-                    <span className="dropzone-title">Select or Drop a .glb File</span>
-                    <span className="dropzone-hint">Saved directly on your device (never uploaded)</span>
-                  </span>
-                )}
-              </label>
-
-              {/* Step 2: Vehicle Display Name */}
-              <div className="modal-field">
-                <label htmlFor="vehicle-name-input" className="modal-label">
-                  Vehicle Display Name
+                  ) : (
+                    <span className="dropzone-meta">
+                      <span className="dropzone-title">Select or Drop a .glb File</span>
+                      <span className="dropzone-hint">Saved directly on your device (never uploaded)</span>
+                    </span>
+                  )}
                 </label>
-                <input
-                  id="vehicle-name-input"
-                  type="text"
-                  className="modal-input"
-                  placeholder="e.g. 2024 Ford Transit Custom"
-                  value={pendingModelName}
-                  onChange={(e) => setPendingModelName(e.target.value)}
-                  required
-                />
-              </div>
 
-              {/* Step 3: Choose Vehicle Icon */}
-              <div className="modal-field">
-                <span className="modal-label">Choose Vehicle Icon</span>
-                <div className="icon-picker-grid">
-                  {VEHICLE_ICON_OPTIONS.map((opt) => {
-                    const active = pendingModelIcon === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        className={`icon-choice-btn${active ? " is-active" : ""}`}
-                        onClick={() => setPendingModelIcon(opt.id)}
+                {/* Step 2: Vehicle Display Name */}
+                <div className="modal-field">
+                  <label htmlFor="vehicle-name-input" className="modal-label">
+                    Vehicle Display Name
+                  </label>
+                  <input
+                    id="vehicle-name-input"
+                    type="text"
+                    className="modal-input"
+                    placeholder="e.g. 2024 Ford Transit Custom"
+                    value={pendingModelName}
+                    onChange={(e) => setPendingModelName(e.target.value)}
+                    required
+                  />
+                </div>
+
+                {/* Step 3: Choose Vehicle Icon */}
+                <div className="modal-field">
+                  <span className="modal-label">Choose Vehicle Icon</span>
+                  <div className="icon-picker-grid">
+                    {VEHICLE_ICON_OPTIONS.map((opt) => {
+                      const active = pendingModelIcon === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          className={`icon-choice-btn${active ? " is-active" : ""}`}
+                          onClick={() => setPendingModelIcon(opt.id)}
+                        >
+                          <VehicleIcon iconId={opt.id} size={20} />
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Subtle Prompt Bar to Open 3D Model Websites Directory */}
+                <div className="model-sources-callout">
+                  <div className="model-sources-callout-text">
+                    <span className="model-sources-callout-title">Find 3D Vehicle Models</span>
+                    <span className="model-sources-callout-sub">
+                      Explore 3D vehicle models from independent third-party websites.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="ai-copy-single-btn"
+                    onClick={() => setAddVehicleTab("discover")}
+                  >
+                    <span>Browse Websites</span>
+                  </button>
+                </div>
+
+                {modalError && <p className="modal-error">{modalError}</p>}
+
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    className="modal-btn-secondary"
+                    onClick={() => setIsAddModalOpen(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="modal-btn-primary"
+                    disabled={!pendingGlbFile || isSavingModel}
+                  >
+                    {isSavingModel ? "Saving Locally..." : "Add to Studio"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="model-directory-view">
+                <p className="model-directory-desc">
+                  Explore 3D vehicle models from independent third-party websites.
+                </p>
+
+                <div className="model-directory-table" role="table" aria-label="3D Vehicle Model Providers">
+                  <div className="model-directory-head" role="row">
+                    <span role="columnheader">Provider</span>
+                    <span role="columnheader">Website</span>
+                  </div>
+                  <div className="model-directory-body" role="rowgroup">
+                    {EXTERNAL_MODEL_PROVIDERS.map((item) => (
+                      <a
+                        key={item.name}
+                        href={item.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="model-directory-row"
+                        role="row"
                       >
-                        <VehicleIcon iconId={opt.id} size={20} />
-                        <span>{opt.label}</span>
-                      </button>
-                    );
-                  })}
+                        <span className="model-provider-name" role="cell">
+                          {item.name}
+                        </span>
+                        <span className="model-provider-url" role="cell">
+                          <span>{item.url}</span>
+                          <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.2"
+                            aria-hidden="true"
+                          >
+                            <path d="M7 17 17 7M9 7h8v8" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        </span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    className="modal-btn-secondary"
+                    onClick={() => setIsAddModalOpen(false)}
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    className="modal-btn-primary"
+                    onClick={() => setAddVehicleTab("upload")}
+                  >
+                    Upload .glb File
+                  </button>
                 </div>
               </div>
-
-              {modalError && <p className="modal-error">{modalError}</p>}
-
-              <div className="modal-actions">
-                <button
-                  type="button"
-                  className="modal-btn-secondary"
-                  onClick={() => setIsAddModalOpen(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="modal-btn-primary"
-                  disabled={!pendingGlbFile || isSavingModel}
-                >
-                  {isSavingModel ? "Saving Locally..." : "Add to Studio"}
-                </button>
-              </div>
-            </form>
+            )}
           </div>
         </div>
       )}
