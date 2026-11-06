@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 
 const CAMERA_PRESETS = [
   { id: "hero", label: "Perspective", shortLabel: "3D", yaw: -0.64, pitch: 0.19, distance: 5.4 },
@@ -906,6 +906,8 @@ uniform sampler2D u_partTex;
 uniform bool u_hasWrapTex;
 uniform sampler2D u_wrapTex;
 uniform int u_wrapMode;
+uniform vec4 u_calSeam;
+uniform vec2 u_calBody;
 uniform bool u_isGlass;
 uniform float u_baseAlpha;
 uniform float u_floorY;
@@ -968,50 +970,65 @@ void main() {
       colFront = texture(u_wrapTex, uvFrontRearAtlas).rgb;
       colTop = texture(u_wrapTex, uvTopAtlas).rgb;
     } else {
-      // Single Image — Continuous Unfolded Vehicle Skin Net (Cruciform UV Layout)
-      // - Center (U: 0.242..0.658, V: 0.375..0.648): Cargo Roof (BLUE)
-      // - Top    (U: 0.240..0.706, V: 0.048..0.352): Driver Side / Left (GREEN, N.z < 0)
-      // - Bottom (U: 0.240..0.706, V: 0.672..0.952): Passenger Side / Right (ORANGE, N.z >= 0)
-      // - Right  (U: 0.675..0.946, V: 0.368..0.652): Front Windshield, Hood & Nose (YELLOW)
-      // - Left   (U: 0.046..0.224, V: 0.368..0.652): Rear Cargo Doors (RED)
+      // Single Image — Continuous Unfolded Vehicle Skin Net (Live 6-Parameter Calibration)
+      float rearSeamX = u_calSeam.x;
+      float frontSeamX = u_calSeam.y;
+      float driverSeamY = u_calSeam.z;
+      float passengerSeamY = u_calSeam.w;
+      float hoodSplitX = u_calBody.x;
+      float sillOffsetY = u_calBody.y;
+
       float normX = clamp(v_normCoord.x, 0.0, 1.0);
       float normY = clamp(v_normCoord.y, 0.0, 1.0);
       float normZ = clamp(v_normCoord.z, 0.0, 1.0);
 
-      // Remap vertical height from lower metal body sill (excluding bottom tire clearance) to roof
-      float bodyY = clamp((normY - 0.13) / 0.86, 0.0, 1.0);
+      // Remap vertical height from lower metal body sill (sillOffsetY) to roof
+      float bodyY = clamp((normY - sillOffsetY) / max(0.25, 0.99 - sillOffsetY), 0.0, 1.0);
 
       // Follow side profile upper contour along sloped front cab/hood and clear wheel-arch cutouts
-      float sideTopLimit = normX > 0.58
-        ? mix(1.0, 0.42, clamp((normX - 0.58) / 0.42, 0.0, 1.0))
+      float cabStart = max(0.30, hoodSplitX - 0.06);
+      float sideTopLimit = normX > cabStart
+        ? mix(1.0, 0.42, clamp((normX - cabStart) / max(0.12, 1.0 - cabStart), 0.0, 1.0))
         : 1.0;
       float rearWheelArch = 0.22 * exp(-pow((normX - 0.17) / 0.10, 2.0));
       float frontWheelArch = 0.24 * exp(-pow((normX - 0.81) / 0.11, 2.0));
       float sideBottomLimit = max(rearWheelArch, frontWheelArch);
       float sideY = clamp(bodyY, sideBottomLimit, max(sideBottomLimit + 0.05, sideTopLimit));
 
-      float sideU = mix(0.240, 0.706, normX);
-      // In right-handed 3D space (+X = Front, +Y = Up), -Z (N.z < 0) is Driver Side (Top) and +Z (N.z >= 0) is Passenger Side (Bottom)
+      float sideEndU = min(0.95, frontSeamX + 0.042);
+      float sideU = mix(rearSeamX, sideEndU, normX);
       float sideV = N.z < 0.0
-        ? mix(0.048, 0.352, sideY)
-        : mix(0.952, 0.672, sideY);
+        ? mix(0.045, max(0.06, driverSeamY - 0.008), sideY)
+        : mix(0.955, min(0.94, passengerSeamY + 0.008), sideY);
       vec2 uvSide = vec2(sideU, sideV);
 
-      // Front zone progression from windshield header (normX = 0.64) to front nose (normX = 1.0)
-      float frontT = clamp(0.72 * ((normX - 0.64) / 0.36) + 0.28 * (1.0 - bodyY), 0.0, 1.0);
-      float frontU = mix(0.675, 0.946, frontT);
-      float frontV = mix(mix(0.368, 0.415, frontT), mix(0.652, 0.605, frontT), normZ);
+      // Front zone progression from windshield header (hoodSplitX) to front nose (1.0)
+      float frontT = clamp(
+        0.72 * ((normX - hoodSplitX) / max(0.12, 1.0 - hoodSplitX)) + 0.28 * (1.0 - bodyY),
+        0.0,
+        1.0
+      );
+      float frontU = mix(min(0.94, frontSeamX + 0.008), 0.948, frontT);
+      float frontV = mix(
+        mix(driverSeamY + 0.008, driverSeamY + 0.052, frontT),
+        mix(passengerSeamY - 0.008, passengerSeamY - 0.052, frontT),
+        normZ
+      );
 
-      float rearU = mix(0.046, 0.224, bodyY);
-      float rearV = mix(0.368, 0.652, normZ);
+      float rearU = mix(0.045, max(0.06, rearSeamX - 0.012), bodyY);
+      float rearV = mix(driverSeamY + 0.008, passengerSeamY - 0.008, normZ);
 
-      bool isFrontZone = (normX >= 0.64) || (N.x >= 0.0 && normX > 0.50);
+      bool isFrontZone = (normX >= hoodSplitX) || (N.x >= 0.0 && normX > 0.50);
       vec2 uvFront = isFrontZone ? vec2(frontU, frontV) : vec2(rearU, rearV);
 
-      // Top projection: Cargo Roof (normX < 0.64) transitions into Sloped Windshield & Front Hood (normX >= 0.64)
-      float roofU = mix(0.242, 0.658, clamp((normX - 0.03) / 0.61, 0.0, 1.0));
-      float roofV = mix(0.375, 0.648, normZ);
-      vec2 uvTop = normX >= 0.64 ? vec2(frontU, frontV) : vec2(roofU, roofV);
+      // Top projection: Cargo Roof (normX < hoodSplitX) transitions into Sloped Windshield & Front Hood (normX >= hoodSplitX)
+      float roofU = mix(
+        rearSeamX + 0.004,
+        frontSeamX - 0.004,
+        clamp((normX - 0.03) / max(0.15, hoodSplitX - 0.03), 0.0, 1.0)
+      );
+      float roofV = mix(driverSeamY + 0.012, passengerSeamY - 0.012, normZ);
+      vec2 uvTop = normX >= hoodSplitX ? vec2(frontU, frontV) : vec2(roofU, roofV);
 
       colSide = texture(u_wrapTex, clamp(uvSide, 0.01, 0.99)).rgb;
       colFront = texture(u_wrapTex, clamp(uvFront, 0.01, 0.99)).rgb;
@@ -1151,6 +1168,25 @@ void main() {
 }
 `;
 
+const WRAP_CAL_STORAGE_KEY = "vws_wrap_calibration_v1";
+const DEFAULT_WRAP_CALIBRATION = {
+  rearSeamX: 0.24,
+  frontSeamX: 0.665,
+  driverSeamY: 0.36,
+  passengerSeamY: 0.665,
+  hoodSplitX: 0.64,
+  sillOffsetY: 0.13,
+};
+
+const WRAP_CALIBRATION_CONTROLS = [
+  { key: "rearSeamX", label: "Rear Seam", min: 0.05, max: 0.42, step: 0.005 },
+  { key: "frontSeamX", label: "Front Seam", min: 0.45, max: 0.90, step: 0.005 },
+  { key: "driverSeamY", label: "Driver Seam", min: 0.15, max: 0.49, step: 0.005 },
+  { key: "passengerSeamY", label: "Passenger Seam", min: 0.51, max: 0.85, step: 0.005 },
+  { key: "hoodSplitX", label: "Hood Split", min: 0.40, max: 0.88, step: 0.005 },
+  { key: "sillOffsetY", label: "Sill Height", min: 0.00, max: 0.32, step: 0.005 },
+];
+
 export default function WrapStudioClient({ initialModels, initialWraps }) {
   const [models, setModels] = useState(initialModels || []);
   const [wraps, setWraps] = useState(initialWraps || []);
@@ -1171,19 +1207,27 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
   // Import Custom Wrap Modal State
   const [isWrapModalOpen, setIsWrapModalOpen] = useState(false);
-  const [wrapImportTab, setWrapImportTab] = useState("single"); // "single" | "multi" | "uv"
+  const [wrapImportTab, setWrapImportTab] = useState("single"); // "single" | "multi"
   const [pendingWrapName, setPendingWrapName] = useState("");
   const [pendingSingleWrap, setPendingSingleWrap] = useState(null); // { file, previewUrl }
   const [pendingMultiViews, setPendingMultiViews] = useState({}); // { [slotId]: { file, previewUrl } }
   const [isSavingWrap, setIsSavingWrap] = useState(false);
   const [wrapModalError, setWrapModalError] = useState("");
-  const [isAiPromptOpen, setIsAiPromptOpen] = useState(false);
-  const [aiPromptMode, setAiPromptMode] = useState("artwork"); // "artwork" | "wireframe"
-  const [aiPromptTheme, setAiPromptTheme] = useState(
-    "Canadian flag inspired — bold red (#D80621) and pure white (#FFFFFF) color blocks, clean central maple leaf motif on the side panels, modern commercial fleet identity"
-  );
   const [isAiPromptCopied, setIsAiPromptCopied] = useState(false);
   const [isRefLightboxOpen, setIsRefLightboxOpen] = useState(false);
+
+  // Live 6-Parameter Wrap Calibration State (Persisted per Vehicle + Wrap in localStorage)
+  const [isTuneOpen, setIsTuneOpen] = useState(false);
+  const [wrapCalMap, setWrapCalMap] = useState(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const raw = window.localStorage.getItem(WRAP_CAL_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  const wrapCalRef = useRef(DEFAULT_WRAP_CALIBRATION);
 
   // 3D Model Credits (CC BY) Modal State
   const [isCreditsModalOpen, setIsCreditsModalOpen] = useState(false);
@@ -1212,6 +1256,46 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
   const activeModel = models.find((m) => m.id === activeModelId) || models[0];
   const activeWrap = wraps.find((w) => w.id === activeWrapId);
+  const activeCalPairKey = `${activeModelId || "default"}::${activeWrapId || "none"}`;
+  const wrapCal = useMemo(
+    () => ({ ...DEFAULT_WRAP_CALIBRATION, ...(wrapCalMap[activeCalPairKey] || {}) }),
+    [wrapCalMap, activeCalPairKey]
+  );
+
+  // Sync 6-parameter wrap calibration ref with active vehicle + wrap pair for the 60fps WebGL loop
+  useEffect(() => {
+    wrapCalRef.current = wrapCal;
+  }, [wrapCal]);
+
+  function updateWrapCalParam(key, numValue) {
+    const numericVal = Number(numValue);
+    setWrapCalMap((prevMap) => {
+      const currentPairCal = { ...DEFAULT_WRAP_CALIBRATION, ...(prevMap[activeCalPairKey] || {}) };
+      const nextPairCal = { ...currentPairCal, [key]: numericVal };
+      wrapCalRef.current = nextPairCal;
+      const nextMap = { ...prevMap, [activeCalPairKey]: nextPairCal };
+      try {
+        window.localStorage.setItem(WRAP_CAL_STORAGE_KEY, JSON.stringify(nextMap));
+      } catch {
+        // Ignore storage quota errors
+      }
+      return nextMap;
+    });
+  }
+
+  function resetWrapCalibration() {
+    wrapCalRef.current = DEFAULT_WRAP_CALIBRATION;
+    setWrapCalMap((prevMap) => {
+      const nextMap = { ...prevMap };
+      delete nextMap[activeCalPairKey];
+      try {
+        window.localStorage.setItem(WRAP_CAL_STORAGE_KEY, JSON.stringify(nextMap));
+      } catch {
+        // Ignore storage errors
+      }
+      return nextMap;
+    });
+  }
 
   // Restore user's locally saved .glb vehicles and custom wraps from IndexedDB on mount
   useEffect(() => {
@@ -1360,6 +1444,8 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
       u_hasWrapTex: gl.getUniformLocation(carProg, "u_hasWrapTex"),
       u_wrapTex: gl.getUniformLocation(carProg, "u_wrapTex"),
       u_wrapMode: gl.getUniformLocation(carProg, "u_wrapMode"),
+      u_calSeam: gl.getUniformLocation(carProg, "u_calSeam"),
+      u_calBody: gl.getUniformLocation(carProg, "u_calBody"),
       u_isGlass: gl.getUniformLocation(carProg, "u_isGlass"),
       u_baseAlpha: gl.getUniformLocation(carProg, "u_baseAlpha"),
       u_floorY: gl.getUniformLocation(carProg, "u_floorY"),
@@ -1465,6 +1551,15 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
       gl.uniformMatrix4fv(carUniforms.u_model, false, modelMat);
       gl.uniform3fv(carUniforms.u_cameraPos, eye);
       gl.uniform1f(carUniforms.u_floorY, state.floorY);
+      const cal = wrapCalRef.current || DEFAULT_WRAP_CALIBRATION;
+      gl.uniform4f(
+        carUniforms.u_calSeam,
+        cal.rearSeamX,
+        cal.frontSeamX,
+        cal.driverSeamY,
+        cal.passengerSeamY
+      );
+      gl.uniform2f(carUniforms.u_calBody, cal.hoodSplitX, cal.sillOffsetY);
 
       if (state.hasWrap && state.wrapTexture) {
         gl.activeTexture(gl.TEXTURE1);
@@ -1929,53 +2024,10 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
     }
   }
 
-  async function handleLoadReferenceSkin() {
-    try {
-      setWrapModalError("");
-      const res = await fetch("/templates/unfolded-wrap-reference.png");
-      const blob = await res.blob();
-      const file = new File([blob], "Unfolded-Skin-Reference.png", { type: "image/png" });
-      handleSingleWrapFilePicked(file);
-      if (!pendingWrapName.trim()) {
-        setPendingWrapName("Unfolded Skin Reference Grid");
-      }
-    } catch {
-      setWrapModalError("Unable to load reference skin image.");
-    }
-  }
-
   const targetVehicleLabel =
     activeModel?.credit?.title || activeModel?.name || "2016 Ford Transit Cargo Van";
-  const effectiveThemeText =
-    aiPromptTheme.trim() ||
-    "Canadian flag inspired — bold red (#D80621) and pure white (#FFFFFF) color blocks, clean central maple leaf motif on the side panels, modern commercial fleet identity";
 
-  const generatedAiPrompt =
-    aiPromptMode === "wireframe"
-      ? `Create a highly accurate, continuous, unfolded vehicle body skin template (Continuous UV Unwrap / Connected Vehicle Surface Net) for a **${targetVehicleLabel}**, using the provided reference image as a structural starting point.
-The result must represent the vehicle's exterior body as if its vinyl-covered skin has been carefully peeled off and physically unfolded into ONE SINGLE CONNECTED, FLAT 2D SURFACE.
-**Required layout and orientation:** Position the ROOF horizontally in the exact center of the canvas, viewed directly from above, with the FRONT OF THE VEHICLE POINTING RIGHT. Attach the DRIVER SIDE directly along the TOP LONG EDGE of the roof, with its front also pointing RIGHT. Attach the PASSENGER SIDE directly along the BOTTOM LONG EDGE of the roof, correctly unfolded and oriented with its front pointing RIGHT in the final image. Attach the FRONT BODY and HOOD to the RIGHT SHORT EDGE of the central roof region, extending outward toward the right. Attach the REAR DOORS to the LEFT SHORT EDGE, extending outward toward the left.
-**Critical requirements:** All five exterior regions must form ONE physically connected, coherent, non-overlapping unfolded surface, not five independent orthographic views, a collage, a contact sheet, or separate UV islands. Shared boundaries must align precisely without gaps, floating sections, overlaps, or inconsistent scale. Preserve realistic ${targetVehicleLabel} proportions, roof curvature, cab shape, door seams, windows, wheel arch openings, body panel boundaries and subtle surface topology. Use precise thin gray vector-style wireframe lines with a consistent engineering grid.
-The result must be a clean, completely flat, top-down technical template with no perspective, shadows, gradients, logos, vehicle wrap graphics, text, colored fills, or decorative elements. Use a fully transparent or pure white background and export as one high-resolution 2:1 PNG (e.g. 4096×2048).
-**Most important:** This is NOT a collection of five vehicle views. It is ONE CONTINUOUS UNFOLDED EXTERIOR SKIN, resembling a real 3D vehicle body cut along selected seams and flattened into a connected 2D pattern, suitable as a visual reference for a custom vehicle wrap mapping workflow.`
-      : `Create a highly accurate, continuous, unfolded 2D vehicle wrap artwork skin (Continuous UV Unwrap / Connected Vehicle Surface Net) for a **${targetVehicleLabel}**, using the attached reference image as the exact structural layout.
-
-**Wrap Artwork & Visual Direction:**
-${effectiveThemeText}
-
-**Required Layout & Orientation (Must match the attached reference net):**
-- **ROOF:** Positioned horizontally in the exact center of the canvas, viewed directly from above, with the FRONT OF THE VEHICLE POINTING RIGHT.
-- **DRIVER SIDE (Left Side):** Attached directly along the TOP LONG EDGE of the roof, unfolded upward with its FRONT POINTING RIGHT (roofline touching the top edge of the roof, wheel arches facing the top edge of the canvas).
-- **PASSENGER SIDE (Right Side):** Attached directly along the BOTTOM LONG EDGE of the roof, unfolded downward with its FRONT POINTING RIGHT (roofline touching the bottom edge of the roof, wheel arches facing the bottom edge of the canvas).
-- **FRONT BODY & HOOD:** Attached to the RIGHT SHORT EDGE of the central roof region, extending outward toward the right.
-- **REAR DOORS:** Attached to the LEFT SHORT EDGE of the central roof region, extending outward toward the left.
-
-**Critical Requirements (Zero-Margin Full-Bleed Mapping):**
-- Generate ONLY the flat, unfolded 2D exterior vehicle wrap skin artwork, NOT a 3D perspective vehicle render or studio scene.
-- All five exterior regions must form ONE physically connected, coherent, non-overlapping unfolded surface where wrap graphics and color blocks flow seamlessly across shared boundaries.
-- Do NOT draw black wireframe grid lines, door seams, window outlines, or white wheel-arch cutouts on top of the wrap artwork; fill all five zones completely and let each panel's colors bleed generously past the outer boundaries with zero white margin.
-- Keep main focal motifs/graphics properly oriented on the Driver Side and Passenger Side body panels, while letting clean accent colors flow across the roof, hood, and rear doors.
-- Export as one high-resolution 2:1 horizontal image (e.g., 2048×1024 or 4096×2048).`;
+  const generatedAiPrompt = `Create a continuous, unfolded 2D vehicle wrap artwork skin (Connected 5-Panel Surface Net) for a ${targetVehicleLabel} matching the attached reference layout: place the ROOF horizontally in the center with the front of the vehicle pointing RIGHT, attach the DRIVER SIDE along the top roof edge unfolded upward (front pointing RIGHT), attach the PASSENGER SIDE along the bottom roof edge unfolded downward (front pointing RIGHT), attach the FRONT HOOD & BUMPER to the right roof edge, and attach the REAR DOORS to the left roof edge. Generate ONLY the flat 2D wrap skin in a 2:1 horizontal aspect ratio with ZERO outer margins (0px margin, full-bleed wrap colors extending completely to and past panel boundaries, no white wheel-arch cutouts, no 3D vehicle mockup, and no wireframe lines drawn over the artwork).\n\nWrap Design Description:\n`;
 
   function handleMultiViewFilePicked(slotId, file) {
     if (!file) return;
@@ -2542,6 +2594,66 @@ ${effectiveThemeText}
         </div>
       )}
 
+      {/* Floating Live 6-Parameter Wrap Calibration Popover (Above Bottom Dock) */}
+      {isTuneOpen && activeWrapId !== "none" && activeWrap?.mode !== "multi" && (
+        <section className="wrap-tune-popover" aria-label="Adjust wrap seams and alignment">
+          <div className="tune-header">
+            <div className="tune-title-wrap">
+              <span className="tune-title">Adjust Wrap Alignment</span>
+              <span className="tune-subtitle">
+                Saved automatically for {activeModel?.name} · {activeWrap?.name}
+              </span>
+            </div>
+            <div className="tune-header-actions">
+              <button
+                type="button"
+                className="tune-reset-btn"
+                onClick={resetWrapCalibration}
+                title="Reset all 6 wrap parameters to default"
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                className="tune-close-btn"
+                onClick={() => setIsTuneOpen(false)}
+                aria-label="Close wrap adjustment panel"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div className="tune-grid">
+            {WRAP_CALIBRATION_CONTROLS.map((ctrl) => {
+              const val = Number(wrapCal[ctrl.key] ?? DEFAULT_WRAP_CALIBRATION[ctrl.key]);
+              return (
+                <label key={ctrl.key} className="tune-slider-item">
+                  <span className="tune-slider-top">
+                    <span className="tune-slider-label">
+                      {ctrl.label}
+                      <span className="tune-slider-hint">{ctrl.hint}</span>
+                    </span>
+                    <span className="tune-slider-val">{Math.round(val * 100)}%</span>
+                  </span>
+                  <input
+                    type="range"
+                    className="tune-range-input"
+                    min={ctrl.min}
+                    max={ctrl.max}
+                    step={ctrl.step}
+                    value={val}
+                    onChange={(e) => updateWrapCalParam(ctrl.key, e.target.value)}
+                  />
+                </label>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Bottom-Center Floating VisionOS Camera & Zoom Dock */}
       <nav className="floating-dock" aria-label="Camera angles and zoom">
         <div className="dock-angles">
@@ -2589,6 +2701,27 @@ ${effectiveThemeText}
             </svg>
           </button>
         </div>
+
+        {activeWrapId !== "none" && activeWrap?.mode !== "multi" && (
+          <>
+            <div className="dock-divider" />
+            <button
+              type="button"
+              className={`dock-tune-btn${isTuneOpen ? " is-active" : ""}`}
+              onClick={() => setIsTuneOpen((open) => !open)}
+              title="Adjust wrap seam alignment on vehicle"
+              aria-expanded={isTuneOpen}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="4" y1="7" x2="20" y2="7" />
+                <line x1="4" y1="17" x2="20" y2="17" />
+                <circle cx="9" cy="7" r="2.3" fill="currentColor" />
+                <circle cx="15" cy="17" r="2.3" fill="currentColor" />
+              </svg>
+              <span>Adjust</span>
+            </button>
+          </>
+        )}
       </nav>
 
       {/* Floating Right Glass Inspector Panel (Collapsible Bottom Sheet on Mobile) */}
@@ -2777,7 +2910,7 @@ ${effectiveThemeText}
         </div>
       </aside>
 
-      {/* Apple-Style Import Custom Wrap Modal (Single Image / Multi-View / Template UV) */}
+      {/* Apple-Style Import Custom Wrap Modal (Single Image / Multi-View) */}
       {isWrapModalOpen && (
         <div
           className="modal-backdrop"
@@ -2807,8 +2940,8 @@ ${effectiveThemeText}
               </button>
             </div>
 
-            {/* 3-Mode Segmented Control */}
-            <div className="wrap-mode-tabs" role="tablist" aria-label="Wrap projection method">
+            {/* 2-Mode Segmented Control */}
+            <div className="wrap-mode-tabs is-two-tabs" role="tablist" aria-label="Wrap projection method">
               <button
                 type="button"
                 role="tab"
@@ -2845,25 +2978,6 @@ ${effectiveThemeText}
                 </svg>
                 <span>Multi-View</span>
               </button>
-
-              <button
-                type="button"
-                role="tab"
-                aria-selected={wrapImportTab === "uv"}
-                className={`wrap-mode-tab${wrapImportTab === "uv" ? " is-active" : ""}`}
-                onClick={() => {
-                  setWrapImportTab("uv");
-                  setWrapModalError("");
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 2L2 7l10 5 10-5-10-5Z" />
-                  <path d="M2 17l10 5 10-5" />
-                  <path d="M2 12l10 5 10-5" />
-                </svg>
-                <span>Template / UV</span>
-                <span className="tab-dev-pill">Soon</span>
-              </button>
             </div>
 
             <form className="modal-form" onSubmit={handleSaveCustomWrapModal}>
@@ -2885,124 +2999,7 @@ ${effectiveThemeText}
                     />
                   </div>
 
-                  {/* AI Unfolded Skin Reference & Prompt Generator Studio Card */}
-                  <div className="ai-template-card">
-                    <div className="ai-template-top">
-                      <button
-                        type="button"
-                        className="ai-ref-thumb-btn"
-                        onClick={() => setIsRefLightboxOpen(true)}
-                        title="Click to inspect full-size Unfolded Skin Reference"
-                      >
-                        <span
-                          className="ai-ref-thumb-img"
-                          role="img"
-                          aria-label="Continuous Unfolded Vehicle Skin Reference"
-                        />
-                        <span className="ai-ref-zoom-badge">Zoom ↗</span>
-                      </button>
-
-                      <div className="ai-template-meta">
-                        <div className="ai-template-title-row">
-                          <span className="ai-template-badge">AI Unfolded Skin Net</span>
-                          <span className="ai-template-ratio">2:1 Connected Layout</span>
-                        </div>
-                        <p className="ai-template-desc">
-                          Roof in center (<strong>Front → Right</strong>), Driver Side on top, Passenger Side on bottom, Front on right, Rear on left.
-                        </p>
-                        <div className="ai-template-actions">
-                          <a
-                            href="/templates/unfolded-wrap-reference.png"
-                            download="Unfolded-Vehicle-Wrap-Reference.png"
-                            className="ai-chip-btn"
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                              <path d="M12 3v12m0 0-4-4m4 4 4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                            <span>Reference PNG</span>
-                          </a>
-
-                          <button
-                            type="button"
-                            className={`ai-chip-btn is-primary${isAiPromptOpen ? " is-open" : ""}`}
-                            onClick={() => setIsAiPromptOpen((v) => !v)}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                              <path d="m12 3 1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3L12 3Z" />
-                            </svg>
-                            <span>{isAiPromptOpen ? "Hide AI Prompt" : "Get AI Prompt"}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            className="ai-chip-btn"
-                            onClick={handleLoadReferenceSkin}
-                            title="Load wireframe reference skin directly to test on the 3D vehicle"
-                          >
-                            <span>Test Grid</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {isAiPromptOpen && (
-                      <div className="ai-prompt-drawer">
-                        <div className="ai-prompt-mode-switch" role="tablist">
-                          <button
-                            type="button"
-                            className={`ai-mode-pill${aiPromptMode === "artwork" ? " is-active" : ""}`}
-                            onClick={() => setAiPromptMode("artwork")}
-                          >
-                            1. Wrap Artwork Prompt (With Reference)
-                          </button>
-                          <button
-                            type="button"
-                            className={`ai-mode-pill${aiPromptMode === "wireframe" ? " is-active" : ""}`}
-                            onClick={() => setAiPromptMode("wireframe")}
-                          >
-                            2. Base Wireframe Unwrap Prompt
-                          </button>
-                        </div>
-
-                        {aiPromptMode === "artwork" && (
-                          <div className="ai-theme-field">
-                            <label htmlFor="ai-wrap-theme" className="ai-theme-label">
-                              Artwork Style / Brand Theme (Target: <strong>{targetVehicleLabel}</strong>)
-                            </label>
-                            <input
-                              id="ai-wrap-theme"
-                              type="text"
-                              className="ai-theme-input"
-                              value={aiPromptTheme}
-                              onChange={(e) => setAiPromptTheme(e.target.value)}
-                              placeholder="Describe colors, motifs, or fleet branding..."
-                            />
-                          </div>
-                        )}
-
-                        <div className="ai-prompt-box-wrap">
-                          <pre className="ai-prompt-pre">{generatedAiPrompt}</pre>
-                          <div className="ai-prompt-footer">
-                            <span className="ai-prompt-tip">
-                              Attach the <strong>Reference PNG</strong> + paste this prompt into ChatGPT, Gemini, or Midjourney.
-                            </span>
-                            <button
-                              type="button"
-                              className="ai-copy-prompt-btn"
-                              onClick={() => {
-                                navigator.clipboard?.writeText(generatedAiPrompt);
-                                setIsAiPromptCopied(true);
-                                setTimeout(() => setIsAiPromptCopied(false), 2000);
-                              }}
-                            >
-                              {isAiPromptCopied ? "✓ Prompt Copied" : "Copy AI Prompt"}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
+                  {/* Primary Upload Dropzone directly under Wrap Design Name */}
                   <label
                     className={`wrap-single-dropzone${pendingSingleWrap ? " has-file" : ""}`}
                     onDragOver={(e) => e.preventDefault()}
@@ -3027,7 +3024,7 @@ ${effectiveThemeText}
                         <div className="single-wrap-info">
                           <span className="dropzone-filename">{pendingSingleWrap.file.name}</span>
                           <span className="dropzone-hint">
-                            {(pendingSingleWrap.file.size / 1024).toFixed(0)} KB · Continuous 5-Zone Unfolded Skin Mapping
+                            {(pendingSingleWrap.file.size / 1024).toFixed(0)} KB · Ready to apply
                           </span>
                           <span className="single-wrap-change">Click or drop to replace image</span>
                         </div>
@@ -3043,11 +3040,70 @@ ${effectiveThemeText}
                         </span>
                         <span className="dropzone-title">Upload Unfolded Single Wrap Image</span>
                         <span className="dropzone-hint">
-                          PNG, JPG, SVG, or WebP · Mapped via Continuous 5-Zone Unfolded Skin Net
+                          PNG, JPG, SVG, or WebP · 2:1 Full-Bleed Unfolded Layout
                         </span>
                       </div>
                     )}
                   </label>
+
+                  {/* Optional Minimal AI Reference & One-Click Prompt Card Below Dropzone */}
+                  <div className="ai-template-card">
+                    <div className="ai-ref-thumb-wrap">
+                      <button
+                        type="button"
+                        className="ai-ref-thumb-btn"
+                        onClick={() => setIsRefLightboxOpen(true)}
+                        title="Preview reference layout"
+                      >
+                        <span
+                          className="ai-ref-thumb-img"
+                          role="img"
+                          aria-label="Unfolded Vehicle Wrap Reference"
+                        />
+                      </button>
+                      <div className="ai-ref-mini-badges">
+                        <button
+                          type="button"
+                          className="ai-ref-mini-btn"
+                          onClick={() => setIsRefLightboxOpen(true)}
+                          title="Zoom reference image"
+                        >
+                          Zoom
+                        </button>
+                        <a
+                          href="/templates/unfolded-wrap-reference.png"
+                          download="Unfolded-Vehicle-Wrap-Reference.png"
+                          className="ai-ref-mini-btn"
+                          title="Download Reference PNG"
+                        >
+                          ↓ PNG
+                        </a>
+                      </div>
+                    </div>
+
+                    <div className="ai-template-meta">
+                      <span className="ai-template-title">Designing with AI? (Optional)</span>
+                      <p className="ai-template-desc">
+                        Download the reference image and copy the ready-to-use prompt for ChatGPT, Gemini, or Midjourney.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      className={`ai-copy-single-btn${isAiPromptCopied ? " is-copied" : ""}`}
+                      onClick={() => {
+                        navigator.clipboard?.writeText(generatedAiPrompt);
+                        setIsAiPromptCopied(true);
+                        setTimeout(() => setIsAiPromptCopied(false), 2000);
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1">
+                        <rect x="9" y="9" width="13" height="13" rx="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                      <span>{isAiPromptCopied ? "✓ Prompt Copied" : "Copy AI Prompt"}</span>
+                    </button>
+                  </div>
                 </>
               )}
 
@@ -3138,30 +3194,6 @@ ${effectiveThemeText}
                 </>
               )}
 
-              {/* Option 3: Template / UV (In Development) */}
-              {wrapImportTab === "uv" && (
-                <div className="uv-dev-card">
-                  <div className="uv-dev-blueprint" aria-hidden="true">
-                    <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <rect x="2" y="3" width="20" height="18" rx="2.5" strokeDasharray="3 2" />
-                      <path d="M6 9h12M6 15h8" />
-                      <circle cx="8" cy="12" r="1.5" />
-                      <circle cx="16" cy="12" r="1.5" />
-                    </svg>
-                    <span className="uv-dev-badge">In Development</span>
-                  </div>
-                  <h3>2D UV Die-Line & Print Template</h3>
-                  <p>
-                    Precision 1:20 print-ready UV layout mapping and vehicle die-line alignment is currently under development and will be unlocked in an upcoming studio update.
-                  </p>
-                  <div className="uv-dev-features">
-                    <span>1:20 Print Scale</span>
-                    <span>Bleed & Cut Guides</span>
-                    <span>Exact Panel Seams</span>
-                  </div>
-                </div>
-              )}
-
               {wrapModalError && <p className="modal-error">{wrapModalError}</p>}
 
               <div className="modal-actions">
@@ -3172,27 +3204,21 @@ ${effectiveThemeText}
                 >
                   Cancel
                 </button>
-                {wrapImportTab === "uv" ? (
-                  <button type="button" className="modal-btn-primary" disabled>
-                    In Development
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    className="modal-btn-primary"
-                    disabled={
-                      isSavingWrap ||
-                      (wrapImportTab === "single" && !pendingSingleWrap) ||
-                      (wrapImportTab === "multi" && uploadedMultiViewCount === 0)
-                    }
-                  >
-                    {isSavingWrap
-                      ? "Applying Wrap..."
-                      : wrapImportTab === "multi"
-                      ? "Apply Multi-View Wrap"
-                      : "Apply Wrap to Studio"}
-                  </button>
-                )}
+                <button
+                  type="submit"
+                  className="modal-btn-primary"
+                  disabled={
+                    isSavingWrap ||
+                    (wrapImportTab === "single" && !pendingSingleWrap) ||
+                    (wrapImportTab === "multi" && uploadedMultiViewCount === 0)
+                  }
+                >
+                  {isSavingWrap
+                    ? "Applying Wrap..."
+                    : wrapImportTab === "multi"
+                    ? "Apply Multi-View Wrap"
+                    : "Apply Wrap to Studio"}
+                </button>
               </div>
             </form>
           </div>
@@ -3214,7 +3240,7 @@ ${effectiveThemeText}
           >
             <div className="modal-header">
               <div>
-                <span className="modal-eyebrow">Continuous UV Unwrap Net · 2:1 Aspect Ratio</span>
+                <span className="modal-eyebrow">Reference Template · 2:1 Aspect Ratio</span>
                 <h2>Unfolded Vehicle Skin Reference</h2>
               </div>
               <button
@@ -3237,10 +3263,10 @@ ${effectiveThemeText}
               />
               <div className="ref-zone-legend">
                 <span><strong>Center:</strong> Roof (Front → Right)</span>
-                <span><strong>Top:</strong> Driver Side (Unfolded Up, Front → Right)</span>
-                <span><strong>Bottom:</strong> Passenger Side (Unfolded Down, Front → Right)</span>
+                <span><strong>Top:</strong> Driver Side</span>
+                <span><strong>Bottom:</strong> Passenger Side</span>
                 <span><strong>Right:</strong> Front Hood & Bumper</span>
-                <span><strong>Left:</strong> Rear Cargo Doors</span>
+                <span><strong>Left:</strong> Rear Doors</span>
               </div>
             </div>
 
@@ -3255,12 +3281,9 @@ ${effectiveThemeText}
               <button
                 type="button"
                 className="modal-btn-primary"
-                onClick={() => {
-                  setIsRefLightboxOpen(false);
-                  handleLoadReferenceSkin();
-                }}
+                onClick={() => setIsRefLightboxOpen(false)}
               >
-                Use as Test Skin on Vehicle
+                Done
               </button>
             </div>
           </div>
