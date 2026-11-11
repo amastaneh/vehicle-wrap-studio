@@ -13,6 +13,14 @@ export const metadata = {
   description: "Interactive 3D commercial fleet wrap studio and finish configurator.",
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+};
+
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className={jakarta.variable}>

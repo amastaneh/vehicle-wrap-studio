@@ -13,7 +13,8 @@ function humanizeFilename(filename) {
     .split(" ")
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+    .join(" ")
+    .replace(/\s+(\d{1,3})$/, " #$1");
 }
 
 function parseNameAndUrl(raw = "") {
@@ -92,12 +93,17 @@ export function discoverAssets() {
     ...(creditsManifest.defaults || {}),
   };
 
+  const preferredDefaultModel = "ford-transit-connect-cargo-2014.glb";
   let models = [];
   if (fs.existsSync(modelsDir)) {
     models = fs
       .readdirSync(modelsDir)
       .filter((file) => /\.(glb|gltf)$/i.test(file))
-      .sort((a, b) => a.localeCompare(b))
+      .sort((a, b) => {
+        if (a === preferredDefaultModel) return -1;
+        if (b === preferredDefaultModel) return 1;
+        return a.localeCompare(b);
+      })
       .map((file) => {
         const displayName = humanizeFilename(file);
         const fullPath = path.join(modelsDir, file);

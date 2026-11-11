@@ -54,9 +54,11 @@ button {
 
 /* Full-Viewport Infinity Studio Shell */
 .atelier-shell {
-  position: relative;
-  width: 100vw;
+  position: fixed;
+  inset: 0;
+  width: 100%;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   background:
     radial-gradient(
@@ -669,6 +671,7 @@ button {
   background: #ffffff;
 }
 
+.swatch-preview-btn,
 .swatch-delete-btn {
   display: grid;
   place-items: center;
@@ -681,6 +684,11 @@ button {
   cursor: pointer;
   flex-shrink: 0;
   transition: all 150ms ease;
+}
+
+.swatch-preview-btn:hover {
+  background: var(--ink);
+  color: #ffffff;
 }
 
 .swatch-delete-btn:hover {
@@ -1566,7 +1574,7 @@ button {
 
   /* 1. Stacked 2-Row Top Floating Header: Logo + App Title on Row 1, Full-Width Vehicle Picker on Row 2 */
   .floating-header {
-    top: 10px;
+    top: calc(10px + env(safe-area-inset-top, 0px));
     left: 10px;
     right: 10px;
     flex-direction: column;
@@ -1625,7 +1633,7 @@ button {
 
   /* 3. Compact Visual Camera Angles Dock above the Collapsed Bottom Sheet */
   .floating-dock {
-    bottom: 84px;
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
     left: 10px;
     right: 10px;
     transform: none;
@@ -1673,7 +1681,7 @@ button {
     top: auto;
     left: 10px;
     right: 10px;
-    bottom: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
     width: auto;
     height: auto;
     max-height: 70px;
@@ -2238,7 +2246,7 @@ button {
   .wrap-tune-popover {
     left: 10px;
     right: 10px;
-    bottom: 142px;
+    bottom: calc(144px + env(safe-area-inset-bottom, 0px));
     width: auto;
     transform: none;
   }
@@ -2259,34 +2267,169 @@ button {
   }
 }
 
-/* Full-Resolution Reference Lightbox */
+/* Full-Resolution Resizable & Zoomable 2D Artwork Lightbox */
 .ref-lightbox-backdrop {
   z-index: 120;
 }
 
 .ref-lightbox-modal {
-  width: min(680px, 95vw);
+  display: flex;
+  flex-direction: column;
+  width: min(1140px, 92vw);
+  height: min(740px, 88vh);
+  max-width: 96vw;
+  max-height: 94vh;
+  min-width: 520px;
+  min-height: 420px;
+  resize: both;
+  overflow: hidden;
+}
+
+.ref-lightbox-modal.is-maximized {
+  width: 96vw !important;
+  height: 92vh !important;
+}
+
+.ref-lightbox-header {
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.ref-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.lightbox-zoom-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.lightbox-zoom-btn {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 140ms ease, opacity 140ms ease;
+}
+
+.lightbox-zoom-btn:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.09);
+}
+
+.lightbox-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.lightbox-zoom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 90px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.16);
+  outline: none;
+  cursor: pointer;
+}
+
+.lightbox-zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid var(--ink);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+  cursor: grab;
+}
+
+.lightbox-zoom-pct {
+  min-width: 36px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-secondary);
+}
+
+.lightbox-zoom-reset {
+  height: 22px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 999px;
+  background: var(--ink);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .ref-lightbox-stage {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 16px;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 18px;
   background: #ffffff;
   border: 1px solid rgba(15, 23, 42, 0.1);
+  margin-bottom: 14px;
+}
+
+.ref-lightbox-viewport {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 50%, #ffffff 0%, #f8fafc 100%);
+  cursor: zoom-in;
+  user-select: none;
+  touch-action: none;
+}
+
+.ref-lightbox-viewport.is-zoomed {
+  cursor: grab;
+}
+
+.ref-lightbox-viewport.is-panning {
+  cursor: grabbing;
 }
 
 .ref-lightbox-img {
   width: 100%;
-  height: 300px;
-  max-height: 52vh;
+  height: 100%;
   background-image: url("/templates/unfolded-wrap-reference.png");
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
   display: block;
+  transform-origin: center center;
+  transition: transform 80ms ease-out;
+  will-change: transform;
+}
+
+.ref-lightbox-viewport.is-panning .ref-lightbox-img {
+  transition: none;
 }
 
 .ref-zone-legend {
@@ -2294,10 +2437,35 @@ button {
   flex-wrap: wrap;
   gap: 6px 12px;
   justify-content: center;
-  padding-top: 8px;
+  padding-top: 6px;
   border-top: 1px solid rgba(15, 23, 42, 0.07);
   font-size: 11px;
-  color: var(--ink-soft);
+  color: var(--ink-muted);
+  flex-shrink: 0;
+}
+
+@media (max-width: 960px) {
+  .ref-lightbox-modal {
+    width: 100%;
+    height: 82dvh;
+    min-width: 0;
+    min-height: 0;
+    resize: none;
+  }
+
+  .ref-lightbox-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .ref-lightbox-toolbar {
+    justify-content: space-between;
+  }
+
+  .lightbox-zoom-slider {
+    width: 70px;
+  }
 }
 
 .inspector-credits-btn {

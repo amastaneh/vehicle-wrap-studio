@@ -1201,7 +1201,12 @@ const EXTERNAL_MODEL_PROVIDERS = [
 export default function WrapStudioClient({ initialModels, initialWraps }) {
   const [models, setModels] = useState(initialModels || []);
   const [wraps, setWraps] = useState(initialWraps || []);
-  const [activeModelId, setActiveModelId] = useState(initialModels?.[0]?.id || "");
+  const [activeModelId, setActiveModelId] = useState(
+    () =>
+      initialModels?.find((m) => m.id === "ford-transit-connect-cargo-2014.glb")?.id ||
+      initialModels?.[0]?.id ||
+      ""
+  );
   const [activeWrapId, setActiveWrapId] = useState(initialWraps?.[0]?.id || "none");
   const [activePreset, setActivePreset] = useState("hero");
   const [isPickerOpen, setIsPickerOpen] = useState(false);
@@ -1227,6 +1232,12 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
   const [wrapModalError, setWrapModalError] = useState("");
   const [isAiPromptCopied, setIsAiPromptCopied] = useState(false);
   const [isRefLightboxOpen, setIsRefLightboxOpen] = useState(false);
+  const [previewWrap, setPreviewWrap] = useState(null);
+  const [lightboxZoom, setLightboxZoom] = useState(1);
+  const [lightboxPan, setLightboxPan] = useState({ x: 0, y: 0 });
+  const [isLightboxPanning, setIsLightboxPanning] = useState(false);
+  const [isLightboxMax, setIsLightboxMax] = useState(false);
+  const lightboxDragRef = useRef({ active: false, moved: false, startX: 0, startY: 0, origX: 0, origY: 0 });
 
   // Live 6-Parameter Wrap Calibration State (Persisted per Vehicle + Wrap in localStorage)
   const [isTuneOpen, setIsTuneOpen] = useState(false);
@@ -1293,6 +1304,82 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
       }
       return nextMap;
     });
+  }
+
+  function resetLightboxTransform() {
+    setLightboxZoom(1);
+    setLightboxPan({ x: 0, y: 0 });
+    setIsLightboxPanning(false);
+  }
+
+  function openReferenceLightbox() {
+    resetLightboxTransform();
+    setIsRefLightboxOpen(true);
+  }
+
+  function openWrapArtworkPreview(wrap) {
+    resetLightboxTransform();
+    setPreviewWrap(wrap);
+  }
+
+  function adjustLightboxZoom(nextVal) {
+    const clamped = Math.max(1, Math.min(5, Number(nextVal.toFixed(2))));
+    setLightboxZoom(clamped);
+    if (clamped <= 1.01) {
+      setLightboxPan({ x: 0, y: 0 });
+    }
+  }
+
+  function handleLightboxWheel(e) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.22 : -0.22;
+    adjustLightboxZoom(lightboxZoom + delta);
+  }
+
+  function handleLightboxPointerDown(e) {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    lightboxDragRef.current = {
+      active: true,
+      moved: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: lightboxPan.x,
+      origY: lightboxPan.y,
+    };
+    if (lightboxZoom > 1) {
+      setIsLightboxPanning(true);
+    }
+  }
+
+  function handleLightboxPointerMove(e) {
+    const drag = lightboxDragRef.current;
+    if (!drag.active) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+      drag.moved = true;
+    }
+    if (lightboxZoom > 1) {
+      setLightboxPan({ x: drag.origX + dx, y: drag.origY + dy });
+    }
+  }
+
+  function handleLightboxPointerUp(e) {
+    const drag = lightboxDragRef.current;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    if (drag.active && !drag.moved) {
+      // Single click with magnifier: toggle zoom 1x -> 2x -> 3x -> 1x
+      if (lightboxZoom < 1.8) {
+        adjustLightboxZoom(2);
+      } else if (lightboxZoom < 2.8) {
+        adjustLightboxZoom(3);
+      } else {
+        resetLightboxTransform();
+      }
+    }
+    drag.active = false;
+    setIsLightboxPanning(false);
   }
 
   function resetWrapCalibration() {
@@ -2993,6 +3080,21 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                       : "Full Body Vinyl"}
                   </span>
                 </span>
+                <button
+                  type="button"
+                  className="swatch-preview-btn"
+                  title={`View 2D flat artwork for ${wrap.name}`}
+                  aria-label={`View 2D flat artwork for ${wrap.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openWrapArtworkPreview(wrap);
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
                 {wrap.isCustom && (
                   <button
                     type="button"
@@ -3185,7 +3287,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                       <button
                         type="button"
                         className="ai-ref-thumb-btn"
-                        onClick={() => setIsRefLightboxOpen(true)}
+                        onClick={openReferenceLightbox}
                         title="Preview reference layout"
                       >
                         <span
@@ -3198,7 +3300,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                         <button
                           type="button"
                           className="ai-ref-mini-btn"
-                          onClick={() => setIsRefLightboxOpen(true)}
+                          onClick={openReferenceLightbox}
                           title="Zoom reference image"
                         >
                           Zoom
@@ -3358,63 +3460,175 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
         </div>
       )}
 
-      {/* Full-Resolution Unfolded Skin Reference Lightbox */}
-      {isRefLightboxOpen && (
+      {/* Resizable, Zoomable Full-Resolution 2D Artwork & Reference Lightbox */}
+      {(isRefLightboxOpen || previewWrap) && (
         <div
           className="modal-backdrop ref-lightbox-backdrop"
-          onClick={() => setIsRefLightboxOpen(false)}
+          onClick={() => {
+            setIsRefLightboxOpen(false);
+            setPreviewWrap(null);
+          }}
         >
           <div
-            className="vehicle-modal ref-lightbox-modal"
+            className={`vehicle-modal ref-lightbox-modal${isLightboxMax ? " is-maximized" : ""}`}
             role="dialog"
             aria-modal="true"
-            aria-label="Unfolded Vehicle Skin Reference Preview"
+            aria-label={
+              previewWrap
+                ? `2D Unfolded Wrap Artwork: ${previewWrap.name}`
+                : "Unfolded Vehicle Skin Reference Preview"
+            }
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="modal-header">
+            <div className="modal-header ref-lightbox-header">
               <div>
-                <span className="modal-eyebrow">Reference Template · 2:1 Aspect Ratio</span>
-                <h2>Unfolded Vehicle Skin Reference</h2>
+                <span className="modal-eyebrow">
+                  {previewWrap
+                    ? "2D Unfolded Wrap Artwork · Interactive Magnifier"
+                    : "Reference Template · 2:1 Aspect Ratio"}
+                </span>
+                <h2>{previewWrap ? previewWrap.name : "Unfolded Vehicle Skin Reference"}</h2>
               </div>
-              <button
-                type="button"
-                className="modal-close-btn"
-                onClick={() => setIsRefLightboxOpen(false)}
-                aria-label="Close reference preview"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                  <path d="M18 6 6 18M6 6l12 12" />
-                </svg>
-              </button>
+
+              <div className="ref-lightbox-toolbar">
+                {/* Interactive Magnifier & Zoom Controls */}
+                <div className="lightbox-zoom-bar" role="group" aria-label="Zoom controls">
+                  <button
+                    type="button"
+                    className="lightbox-zoom-btn"
+                    onClick={() => adjustLightboxZoom(lightboxZoom - 0.5)}
+                    disabled={lightboxZoom <= 1}
+                    title="Zoom Out"
+                    aria-label="Zoom out"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m20 20-3.5-3.5M8 11h6" strokeLinecap="round" />
+                    </svg>
+                  </button>
+
+                  <input
+                    type="range"
+                    className="lightbox-zoom-slider"
+                    min="1"
+                    max="5"
+                    step="0.1"
+                    value={lightboxZoom}
+                    onChange={(e) => adjustLightboxZoom(Number(e.target.value))}
+                    aria-label="Zoom level"
+                  />
+
+                  <span className="lightbox-zoom-pct">{Math.round(lightboxZoom * 100)}%</span>
+
+                  <button
+                    type="button"
+                    className="lightbox-zoom-btn"
+                    onClick={() => adjustLightboxZoom(lightboxZoom + 0.5)}
+                    disabled={lightboxZoom >= 5}
+                    title="Zoom In"
+                    aria-label="Zoom in"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m20 20-3.5-3.5M11 8v6M8 11h6" strokeLinecap="round" />
+                    </svg>
+                  </button>
+
+                  {lightboxZoom > 1 && (
+                    <button
+                      type="button"
+                      className="lightbox-zoom-reset"
+                      onClick={resetLightboxTransform}
+                      title="Reset zoom to 100%"
+                    >
+                      1:1
+                    </button>
+                  )}
+                </div>
+
+                {/* Maximize / Restore Window Size Button */}
+                <button
+                  type="button"
+                  className="modal-close-btn"
+                  onClick={() => setIsLightboxMax((v) => !v)}
+                  title={isLightboxMax ? "Restore window size" : "Maximize window"}
+                  aria-label={isLightboxMax ? "Restore window size" : "Maximize window"}
+                >
+                  {isLightboxMax ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1">
+                      <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+                    </svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1">
+                      <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                    </svg>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  className="modal-close-btn"
+                  onClick={() => {
+                    setIsRefLightboxOpen(false);
+                    setPreviewWrap(null);
+                  }}
+                  aria-label="Close preview"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <div className="ref-lightbox-stage">
               <div
-                className="ref-lightbox-img"
-                role="img"
-                aria-label="Unfolded Vehicle Skin Reference Net"
-              />
+                className={`ref-lightbox-viewport${
+                  lightboxZoom > 1 ? (isLightboxPanning ? " is-panning" : " is-zoomed") : ""
+                }`}
+                onWheel={handleLightboxWheel}
+                onPointerDown={handleLightboxPointerDown}
+                onPointerMove={handleLightboxPointerMove}
+                onPointerUp={handleLightboxPointerUp}
+                onPointerCancel={handleLightboxPointerUp}
+              >
+                <div
+                  className="ref-lightbox-img"
+                  style={{
+                    backgroundImage: `url("${
+                      previewWrap ? previewWrap.url : "/templates/unfolded-wrap-reference.png"
+                    }")`,
+                    transform: `translate3d(${lightboxPan.x}px, ${lightboxPan.y}px, 0) scale(${lightboxZoom})`,
+                  }}
+                  role="img"
+                  aria-label={previewWrap ? previewWrap.name : "Unfolded Vehicle Skin Reference Net"}
+                />
+              </div>
+
               <div className="ref-zone-legend">
-                <span><strong>Center:</strong> Roof (Front → Right)</span>
-                <span><strong>Top:</strong> Driver Side</span>
-                <span><strong>Bottom:</strong> Passenger Side</span>
-                <span><strong>Right:</strong> Front Hood & Bumper</span>
-                <span><strong>Left:</strong> Rear Doors</span>
+                <span>🔍 Click or scroll wheel to magnify · Drag to pan when zoomed · Drag bottom-right corner to resize window</span>
               </div>
             </div>
 
             <div className="modal-actions">
               <a
-                href="/templates/unfolded-wrap-reference.png"
-                download="Unfolded-Vehicle-Wrap-Reference.png"
+                href={previewWrap ? previewWrap.url : "/templates/unfolded-wrap-reference.png"}
+                download={
+                  previewWrap
+                    ? previewWrap.filename || `${previewWrap.name}.png`
+                    : "Unfolded-Vehicle-Wrap-Reference.png"
+                }
                 className="modal-btn-secondary ref-download-link"
               >
-                Download Reference PNG
+                {previewWrap ? "Download Wrap Image" : "Download Reference PNG"}
               </a>
               <button
                 type="button"
                 className="modal-btn-primary"
-                onClick={() => setIsRefLightboxOpen(false)}
+                onClick={() => {
+                  setIsRefLightboxOpen(false);
+                  setPreviewWrap(null);
+                }}
               >
                 Done
               </button>
