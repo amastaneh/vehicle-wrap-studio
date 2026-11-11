@@ -3604,10 +3604,6 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                   aria-label={previewWrap ? previewWrap.name : "Unfolded Vehicle Skin Reference Net"}
                 />
               </div>
-
-              <div className="ref-zone-legend">
-                <span>🔍 Click or scroll wheel to magnify · Drag to pan when zoomed · Drag bottom-right corner to resize window</span>
-              </div>
             </div>
 
             <div className="modal-actions">
