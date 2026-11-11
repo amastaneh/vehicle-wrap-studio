@@ -137,16 +137,47 @@ export function discoverAssets() {
 
   let wraps = [];
   if (fs.existsSync(wrapsDir)) {
-    wraps = fs
-      .readdirSync(wrapsDir)
-      .filter((file) => /\.(svg|png|jpe?g|webp)$/i.test(file))
-      .sort((a, b) => a.localeCompare(b))
-      .map((file) => ({
-        id: file,
-        name: humanizeFilename(file),
-        url: `/wraps/${encodeURIComponent(file)}`,
-        filename: file,
-      }));
+    const entries = fs.readdirSync(wrapsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && /\.(svg|png|jpe?g|webp)$/i.test(entry.name)) {
+        wraps.push({
+          id: entry.name,
+          name: humanizeFilename(entry.name),
+          mode: "single",
+          url: `/wraps/${encodeURIComponent(entry.name)}`,
+          filename: entry.name,
+        });
+      } else if (entry.isDirectory()) {
+        const subDir = path.join(wrapsDir, entry.name);
+        const subFiles = fs
+          .readdirSync(subDir)
+          .filter((f) => /\.(svg|png|jpe?g|webp)$/i.test(f));
+        const views = {};
+        for (const f of subFiles) {
+          const lower = f.toLowerCase();
+          const url = `/wraps/${encodeURIComponent(entry.name)}/${encodeURIComponent(f)}`;
+          if (lower.includes("left") || lower.includes("driver")) views.left = url;
+          else if (lower.includes("right") || lower.includes("passenger")) views.right = url;
+          else if (lower.includes("front") || lower.includes("hood")) views.front = url;
+          else if (lower.includes("rear") || lower.includes("back")) views.rear = url;
+          else if (lower.includes("roof") || lower.includes("top")) views.roof = url;
+        }
+        const firstViewUrl =
+          views.left || views.right || views.front || views.roof || views.rear;
+        if (firstViewUrl) {
+          wraps.push({
+            id: `multi-${entry.name}`,
+            name: humanizeFilename(entry.name),
+            mode: "multi",
+            url: firstViewUrl,
+            thumbUrl: firstViewUrl,
+            views,
+            filename: entry.name,
+          });
+        }
+      }
+    }
+    wraps.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   return { models, wraps };

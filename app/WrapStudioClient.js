@@ -244,11 +244,21 @@ async function getSavedCustomWrapsFromDB() {
           const thumbBlob = new Blob([row.thumbBuffer], { type: "image/png" });
           thumbUrl = URL.createObjectURL(thumbBlob);
         }
+        let views = null;
+        if (row.viewBuffers && typeof row.viewBuffers === "object") {
+          views = {};
+          for (const [k, buf] of Object.entries(row.viewBuffers)) {
+            if (buf) {
+              views[k] = URL.createObjectURL(new Blob([buf], { type: "image/png" }));
+            }
+          }
+        }
         return {
           id: row.id,
           name: row.name,
           url,
           thumbUrl,
+          views,
           mode: row.mode || "single",
           isCustom: true,
         };
@@ -914,6 +924,119 @@ uniform float u_floorY;
 
 out vec4 outColor;
 
+// Engine 1 (1x Single-Sheet): Continuous Unfolded Vinyl Sheet Mapping (Single UV lookup, zero multi-image ghosting)
+vec3 sampleSingleSheetWrap(vec3 normCoord, vec4 calSeam, vec2 calBody) {
+  float rearSeamX = calSeam.x;
+  float frontSeamX = calSeam.y;
+  float driverSeamY = calSeam.z;
+  float passengerSeamY = calSeam.w;
+  float hoodSplitX = calBody.x;
+  float sillOffsetY = calBody.y;
+
+  float normX = clamp(normCoord.x, 0.0, 1.0);
+  float normY = clamp(normCoord.y, 0.0, 1.0);
+  float normZ = clamp(normCoord.z, 0.0, 1.0);
+
+  // Vertical position on metal body from lower sill (0.0) to roof top (1.0), and downward fold drop (0.0 at roof -> 1.0 at sill)
+  float bodyY = clamp((normY - sillOffsetY) / max(0.25, 0.99 - sillOffsetY), 0.0, 1.0);
+  float drop = 1.0 - bodyY;
+
+  // Signed lateral coordinate (-1.0 Driver Side -> 0.0 Center -> +1.0 Passenger Side)
+  float zSigned = (normZ - 0.5) * 2.0;
+  float sideReach = smoothstep(0.30, 0.86, abs(zSigned));
+
+  // Keep side drop above wheel-arch cutouts on the unfolded 2D skin
+  float rearWheelArch = 0.22 * exp(-pow((normX - 0.17) / 0.10, 2.0));
+  float frontWheelArch = 0.24 * exp(-pow((normX - 0.81) / 0.11, 2.0));
+  float maxSideDrop = 1.0 - max(rearWheelArch, frontWheelArch);
+  float sideFoldT = min(clamp(drop * mix(0.32, 1.0, sideReach), 0.0, 1.0), maxSideDrop);
+
+  // Base roof V coordinate between driverSeamY and passengerSeamY, unfolding continuously up/down onto Driver & Passenger sides
+  float vRoof = mix(driverSeamY, passengerSeamY, normZ);
+  float targetSideV = mix(0.048, 0.952, smoothstep(-0.16, 0.16, zSigned));
+  float vSideAndRoof = mix(vRoof, targetSideV, sideFoldT * sideReach);
+
+  // Longitudinal U progression along the roof & side body (from rear edge to windshield/hood split)
+  float bodySpanT = clamp((normX - 0.05) / max(0.15, hoodSplitX - 0.05), 0.0, 1.0);
+  float uMain = mix(rearSeamX, frontSeamX, bodySpanT);
+
+  // Front unfolding (normX > hoodSplitX): extends continuously from frontSeamX out to 0.948 on hood/bumper, or frontSeamX+0.042 on front fenders
+  float frontT = clamp((normX - hoodSplitX) / max(0.12, 1.0 - hoodSplitX), 0.0, 1.0);
+  float frontCenterCorridor = 1.0 - smoothstep(0.58, 0.92, abs(zSigned));
+  float uFrontHood = mix(frontSeamX, 0.948, clamp(0.76 * frontT + 0.24 * drop, 0.0, 1.0));
+  float uFrontFender = mix(frontSeamX, min(0.95, frontSeamX + 0.042), frontT);
+  float uWithFront = normX > hoodSplitX
+    ? mix(uFrontFender, uFrontHood, frontCenterCorridor)
+    : uMain;
+
+  float vFrontHood = mix(
+    mix(driverSeamY + 0.010, driverSeamY + 0.050, frontT),
+    mix(passengerSeamY - 0.010, passengerSeamY - 0.050, frontT),
+    normZ
+  );
+  float frontBlend = smoothstep(hoodSplitX - 0.03, hoodSplitX + 0.06, normX) * frontCenterCorridor;
+  float vWithFront = mix(vSideAndRoof, vFrontHood, frontBlend);
+
+  // Rear unfolding (normX near 0.0): unfolds continuously leftward from rearSeamX to 0.048 as drop increases down the rear doors
+  float rearCorridor = (1.0 - smoothstep(0.02, 0.11, normX)) * (1.0 - smoothstep(0.64, 0.92, abs(zSigned)));
+  float uRearDoor = mix(rearSeamX, 0.048, drop);
+  float vRearDoor = mix(driverSeamY + 0.010, passengerSeamY - 0.010, normZ);
+
+  float uFinal = mix(uWithFront, uRearDoor, rearCorridor);
+  float vFinal = mix(vWithFront, vRearDoor, rearCorridor);
+
+  return texture(u_wrapTex, clamp(vec2(uFinal, vFinal), 0.01, 0.99)).rgb;
+}
+
+// Engine 2 (5x Multi-View): Independent 5-Panel Orthographic Projection with Dedicated 5-View Calibration
+vec3 sampleMultiPanelWrap(vec3 normCoord, vec3 N, vec4 calA, vec2 calB) {
+  float sideScaleX = calA.x;
+  float sideScaleY = calA.y;
+  float endScale = calA.z;
+  float roofScale = calA.w;
+  float offsetY = calB.x;
+  float seamSharpness = calB.y;
+
+  float sharpExp = mix(2.0, 12.0, clamp(seamSharpness, 0.0, 1.0));
+  vec3 blendW = pow(abs(N), vec3(sharpExp));
+  blendW /= (blendW.x + blendW.y + blendW.z + 0.0001);
+
+  float sideRawX = N.z >= 0.0 ? 1.0 - normCoord.x : normCoord.x;
+  float sideRawY = 1.0 - normCoord.y + offsetY;
+  vec2 localSide = clamp(
+    vec2((sideRawX - 0.5) / max(0.25, sideScaleX) + 0.5, (sideRawY - 0.5) / max(0.25, sideScaleY) + 0.5),
+    0.015,
+    0.985
+  );
+  vec2 uvSideAtlas = N.z >= 0.0
+    ? vec2(localSide.x * 0.5, localSide.y * 0.5)
+    : vec2(0.5 + localSide.x * 0.5, localSide.y * 0.5);
+
+  float endRawX = N.x >= 0.0 ? normCoord.z : 1.0 - normCoord.z;
+  float endRawY = 1.0 - normCoord.y + offsetY;
+  vec2 localFrontRear = clamp(
+    vec2((endRawX - 0.5) / max(0.25, endScale) + 0.5, (endRawY - 0.5) / max(0.25, endScale) + 0.5),
+    0.015,
+    0.985
+  );
+  vec2 uvFrontRearAtlas = N.x >= 0.0
+    ? vec2(localFrontRear.x * 0.333333, 0.5 + localFrontRear.y * 0.5)
+    : vec2(0.333333 + localFrontRear.x * 0.333333, 0.5 + localFrontRear.y * 0.5);
+
+  vec2 localTop = clamp(
+    vec2((normCoord.x - 0.5) / max(0.25, roofScale) + 0.5, (normCoord.z - 0.5) / max(0.25, roofScale) + 0.5),
+    0.015,
+    0.985
+  );
+  vec2 uvTopAtlas = vec2(0.666667 + localTop.x * 0.333333, 0.5 + localTop.y * 0.5);
+
+  vec3 colSide = texture(u_wrapTex, uvSideAtlas).rgb;
+  vec3 colFront = texture(u_wrapTex, uvFrontRearAtlas).rgb;
+  vec3 colTop = texture(u_wrapTex, uvTopAtlas).rgb;
+
+  return colSide * blendW.z + colFront * blendW.x + colTop * blendW.y;
+}
+
 void main() {
   vec3 N = normalize(gl_FrontFacing ? v_normal : -v_normal);
   vec3 V = normalize(u_cameraPos - v_worldPos);
@@ -936,106 +1059,10 @@ void main() {
 
   bool isWrapped = u_hasWrapTex && (v_bodyMask > 0.5);
   if (isWrapped) {
-    vec3 blendW = pow(abs(N), vec3(4.0));
-    blendW /= (blendW.x + blendW.y + blendW.z + 0.0001);
+    vec3 wrappedCol = (u_wrapMode == 1)
+      ? sampleMultiPanelWrap(v_normCoord, N, u_calSeam, u_calBody)
+      : sampleSingleSheetWrap(v_normCoord, u_calSeam, u_calBody);
 
-    vec3 colSide;
-    vec3 colFront;
-    vec3 colTop;
-
-    if (u_wrapMode == 1) {
-      // Multi-View 5-Panel Atlas (Driver Side, Passenger Side, Front, Rear, Roof)
-      vec2 localSide = clamp(
-        vec2(N.z >= 0.0 ? 1.0 - v_normCoord.x : v_normCoord.x, 1.0 - v_normCoord.y),
-        0.015,
-        0.985
-      );
-      vec2 uvSideAtlas = N.z >= 0.0
-        ? vec2(localSide.x * 0.5, localSide.y * 0.5)
-        : vec2(0.5 + localSide.x * 0.5, localSide.y * 0.5);
-
-      vec2 localFrontRear = clamp(
-        vec2(N.x >= 0.0 ? v_normCoord.z : 1.0 - v_normCoord.z, 1.0 - v_normCoord.y),
-        0.015,
-        0.985
-      );
-      vec2 uvFrontRearAtlas = N.x >= 0.0
-        ? vec2(localFrontRear.x * 0.333333, 0.5 + localFrontRear.y * 0.5)
-        : vec2(0.333333 + localFrontRear.x * 0.333333, 0.5 + localFrontRear.y * 0.5);
-
-      vec2 localTop = clamp(vec2(v_normCoord.x, v_normCoord.z), 0.015, 0.985);
-      vec2 uvTopAtlas = vec2(0.666667 + localTop.x * 0.333333, 0.5 + localTop.y * 0.5);
-
-      colSide = texture(u_wrapTex, uvSideAtlas).rgb;
-      colFront = texture(u_wrapTex, uvFrontRearAtlas).rgb;
-      colTop = texture(u_wrapTex, uvTopAtlas).rgb;
-    } else {
-      // Single Image — Continuous Unfolded Vehicle Skin Net (Live 6-Parameter Calibration)
-      float rearSeamX = u_calSeam.x;
-      float frontSeamX = u_calSeam.y;
-      float driverSeamY = u_calSeam.z;
-      float passengerSeamY = u_calSeam.w;
-      float hoodSplitX = u_calBody.x;
-      float sillOffsetY = u_calBody.y;
-
-      float normX = clamp(v_normCoord.x, 0.0, 1.0);
-      float normY = clamp(v_normCoord.y, 0.0, 1.0);
-      float normZ = clamp(v_normCoord.z, 0.0, 1.0);
-
-      // Remap vertical height from lower metal body sill (sillOffsetY) to roof
-      float bodyY = clamp((normY - sillOffsetY) / max(0.25, 0.99 - sillOffsetY), 0.0, 1.0);
-
-      // Follow side profile upper contour along sloped front cab/hood and clear wheel-arch cutouts
-      float cabStart = max(0.30, hoodSplitX - 0.06);
-      float sideTopLimit = normX > cabStart
-        ? mix(1.0, 0.42, clamp((normX - cabStart) / max(0.12, 1.0 - cabStart), 0.0, 1.0))
-        : 1.0;
-      float rearWheelArch = 0.22 * exp(-pow((normX - 0.17) / 0.10, 2.0));
-      float frontWheelArch = 0.24 * exp(-pow((normX - 0.81) / 0.11, 2.0));
-      float sideBottomLimit = max(rearWheelArch, frontWheelArch);
-      float sideY = clamp(bodyY, sideBottomLimit, max(sideBottomLimit + 0.05, sideTopLimit));
-
-      float sideEndU = min(0.95, frontSeamX + 0.042);
-      float sideU = mix(rearSeamX, sideEndU, normX);
-      float sideV = N.z < 0.0
-        ? mix(0.045, max(0.06, driverSeamY - 0.008), sideY)
-        : mix(0.955, min(0.94, passengerSeamY + 0.008), sideY);
-      vec2 uvSide = vec2(sideU, sideV);
-
-      // Front zone progression from windshield header (hoodSplitX) to front nose (1.0)
-      float frontT = clamp(
-        0.72 * ((normX - hoodSplitX) / max(0.12, 1.0 - hoodSplitX)) + 0.28 * (1.0 - bodyY),
-        0.0,
-        1.0
-      );
-      float frontU = mix(min(0.94, frontSeamX + 0.008), 0.948, frontT);
-      float frontV = mix(
-        mix(driverSeamY + 0.008, driverSeamY + 0.052, frontT),
-        mix(passengerSeamY - 0.008, passengerSeamY - 0.052, frontT),
-        normZ
-      );
-
-      float rearU = mix(0.045, max(0.06, rearSeamX - 0.012), bodyY);
-      float rearV = mix(driverSeamY + 0.008, passengerSeamY - 0.008, normZ);
-
-      bool isFrontZone = (normX >= hoodSplitX) || (N.x >= 0.0 && normX > 0.50);
-      vec2 uvFront = isFrontZone ? vec2(frontU, frontV) : vec2(rearU, rearV);
-
-      // Top projection: Cargo Roof (normX < hoodSplitX) transitions into Sloped Windshield & Front Hood (normX >= hoodSplitX)
-      float roofU = mix(
-        rearSeamX + 0.004,
-        frontSeamX - 0.004,
-        clamp((normX - 0.03) / max(0.15, hoodSplitX - 0.03), 0.0, 1.0)
-      );
-      float roofV = mix(driverSeamY + 0.012, passengerSeamY - 0.012, normZ);
-      vec2 uvTop = normX >= hoodSplitX ? vec2(frontU, frontV) : vec2(roofU, roofV);
-
-      colSide = texture(u_wrapTex, clamp(uvSide, 0.01, 0.99)).rgb;
-      colFront = texture(u_wrapTex, clamp(uvFront, 0.01, 0.99)).rgb;
-      colTop = texture(u_wrapTex, clamp(uvTop, 0.01, 0.99)).rgb;
-    }
-
-    vec3 wrappedCol = colSide * blendW.z + colFront * blendW.x + colTop * blendW.y;
     if (u_hasPartTex) {
       float texLuma = dot(baseCol, vec3(0.299, 0.587, 0.114));
       wrappedCol *= mix(0.90, 1.03, clamp(texLuma, 0.0, 1.0));
@@ -1168,8 +1195,12 @@ void main() {
 }
 `;
 
-const WRAP_CAL_STORAGE_KEY = "vws_wrap_calibration_v1";
-const DEFAULT_WRAP_CALIBRATION = {
+const WRAP_CAL_STORAGE_KEY = "vws_wrap_calibration_v2";
+
+// ============================================================================
+// SYSTEM 1: SINGLE-SHEET CONTINUOUS WRAP CALIBRATION (1x Mode)
+// ============================================================================
+const DEFAULT_SINGLE_WRAP_CALIBRATION = {
   rearSeamX: 0.24,
   frontSeamX: 0.665,
   driverSeamY: 0.36,
@@ -1178,13 +1209,34 @@ const DEFAULT_WRAP_CALIBRATION = {
   sillOffsetY: 0.13,
 };
 
-const WRAP_CALIBRATION_CONTROLS = [
-  { key: "rearSeamX", label: "Rear Seam", min: 0.05, max: 0.42, step: 0.005 },
-  { key: "frontSeamX", label: "Front Seam", min: 0.45, max: 0.90, step: 0.005 },
-  { key: "driverSeamY", label: "Driver Seam", min: 0.15, max: 0.49, step: 0.005 },
-  { key: "passengerSeamY", label: "Passenger Seam", min: 0.51, max: 0.85, step: 0.005 },
-  { key: "hoodSplitX", label: "Hood Split", min: 0.40, max: 0.88, step: 0.005 },
-  { key: "sillOffsetY", label: "Sill Height", min: 0.00, max: 0.32, step: 0.005 },
+const SINGLE_WRAP_CALIBRATION_CONTROLS = [
+  { key: "rearSeamX", label: "Rear Fold Line", min: 0.05, max: 0.42, step: 0.005 },
+  { key: "frontSeamX", label: "Front Fold Line", min: 0.45, max: 0.90, step: 0.005 },
+  { key: "driverSeamY", label: "Driver Roof Edge", min: 0.15, max: 0.49, step: 0.005 },
+  { key: "passengerSeamY", label: "Passenger Roof Edge", min: 0.51, max: 0.85, step: 0.005 },
+  { key: "hoodSplitX", label: "Hood / Cab Split", min: 0.40, max: 0.88, step: 0.005 },
+  { key: "sillOffsetY", label: "Lower Sill Reach", min: 0.00, max: 0.32, step: 0.005 },
+];
+
+// ============================================================================
+// SYSTEM 2: 5-PANEL MULTI-VIEW WRAP CALIBRATION (5x Mode)
+// ============================================================================
+const DEFAULT_MULTI_WRAP_CALIBRATION = {
+  sideScaleX: 0.50,
+  sideScaleY: 0.50,
+  endScale: 0.50,
+  roofScale: 0.50,
+  offsetY: 0.50,
+  seamSharpness: 0.65,
+};
+
+const MULTI_WRAP_CALIBRATION_CONTROLS = [
+  { key: "sideScaleX", label: "Side Length Scale", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "sideScaleY", label: "Side Height Scale", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "endScale", label: "Front & Rear Scale", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "roofScale", label: "Roof Panel Scale", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "offsetY", label: "Vertical Shift", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "seamSharpness", label: "5-Panel Edge Crispness", min: 0.05, max: 0.95, step: 0.005 },
 ];
 
 const EXTERNAL_MODEL_PROVIDERS = [
@@ -1233,6 +1285,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
   const [isAiPromptCopied, setIsAiPromptCopied] = useState(false);
   const [isRefLightboxOpen, setIsRefLightboxOpen] = useState(false);
   const [previewWrap, setPreviewWrap] = useState(null);
+  const [previewMultiViewSlot, setPreviewMultiViewSlot] = useState("atlas"); // "atlas" | "left" | "right" | "front" | "rear" | "top"
   const [lightboxZoom, setLightboxZoom] = useState(1);
   const [lightboxPan, setLightboxPan] = useState({ x: 0, y: 0 });
   const [isLightboxPanning, setIsLightboxPanning] = useState(false);
@@ -1250,7 +1303,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
       return {};
     }
   });
-  const wrapCalRef = useRef(DEFAULT_WRAP_CALIBRATION);
+  const wrapCalRef = useRef(DEFAULT_SINGLE_WRAP_CALIBRATION);
 
   // 3D Model Credits (CC BY) Modal State
   const [isCreditsModalOpen, setIsCreditsModalOpen] = useState(false);
@@ -1279,10 +1332,17 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
   const activeModel = models.find((m) => m.id === activeModelId) || models[0];
   const activeWrap = wraps.find((w) => w.id === activeWrapId);
+  const isActiveWrapMulti = activeWrap?.mode === "multi";
+  const activeDefaultCal = isActiveWrapMulti
+    ? DEFAULT_MULTI_WRAP_CALIBRATION
+    : DEFAULT_SINGLE_WRAP_CALIBRATION;
+  const activeCalControls = isActiveWrapMulti
+    ? MULTI_WRAP_CALIBRATION_CONTROLS
+    : SINGLE_WRAP_CALIBRATION_CONTROLS;
   const activeCalPairKey = `${activeModelId || "default"}::${activeWrapId || "none"}`;
   const wrapCal = useMemo(
-    () => ({ ...DEFAULT_WRAP_CALIBRATION, ...(wrapCalMap[activeCalPairKey] || {}) }),
-    [wrapCalMap, activeCalPairKey]
+    () => ({ ...activeDefaultCal, ...(wrapCalMap[activeCalPairKey] || {}) }),
+    [wrapCalMap, activeCalPairKey, activeDefaultCal]
   );
 
   // Sync 6-parameter wrap calibration ref with active vehicle + wrap pair for the 60fps WebGL loop
@@ -1293,7 +1353,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
   function updateWrapCalParam(key, numValue) {
     const numericVal = Number(numValue);
     setWrapCalMap((prevMap) => {
-      const currentPairCal = { ...DEFAULT_WRAP_CALIBRATION, ...(prevMap[activeCalPairKey] || {}) };
+      const currentPairCal = { ...activeDefaultCal, ...(prevMap[activeCalPairKey] || {}) };
       const nextPairCal = { ...currentPairCal, [key]: numericVal };
       wrapCalRef.current = nextPairCal;
       const nextMap = { ...prevMap, [activeCalPairKey]: nextPairCal };
@@ -1319,6 +1379,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
   function openWrapArtworkPreview(wrap) {
     resetLightboxTransform();
+    setPreviewMultiViewSlot("atlas");
     setPreviewWrap(wrap);
   }
 
@@ -1383,7 +1444,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
   }
 
   function resetWrapCalibration() {
-    wrapCalRef.current = DEFAULT_WRAP_CALIBRATION;
+    wrapCalRef.current = activeDefaultCal;
     setWrapCalMap((prevMap) => {
       const nextMap = { ...prevMap };
       delete nextMap[activeCalPairKey];
@@ -1650,15 +1711,38 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
       gl.uniformMatrix4fv(carUniforms.u_model, false, modelMat);
       gl.uniform3fv(carUniforms.u_cameraPos, eye);
       gl.uniform1f(carUniforms.u_floorY, state.floorY);
-      const cal = wrapCalRef.current || DEFAULT_WRAP_CALIBRATION;
-      gl.uniform4f(
-        carUniforms.u_calSeam,
-        cal.rearSeamX,
-        cal.frontSeamX,
-        cal.driverSeamY,
-        cal.passengerSeamY
-      );
-      gl.uniform2f(carUniforms.u_calBody, cal.hoodSplitX, cal.sillOffsetY);
+      const cal =
+        wrapCalRef.current ||
+        (state.wrapMode === 1
+          ? DEFAULT_MULTI_WRAP_CALIBRATION
+          : DEFAULT_SINGLE_WRAP_CALIBRATION);
+      if (state.wrapMode === 1) {
+        gl.uniform4f(
+          carUniforms.u_calSeam,
+          cal.sideScaleX ?? 0.5,
+          cal.sideScaleY ?? 0.5,
+          cal.endScale ?? 0.5,
+          cal.roofScale ?? 0.5
+        );
+        gl.uniform2f(
+          carUniforms.u_calBody,
+          cal.offsetY ?? 0.5,
+          cal.seamSharpness ?? 0.65
+        );
+      } else {
+        gl.uniform4f(
+          carUniforms.u_calSeam,
+          cal.rearSeamX ?? 0.24,
+          cal.frontSeamX ?? 0.665,
+          cal.driverSeamY ?? 0.36,
+          cal.passengerSeamY ?? 0.665
+        );
+        gl.uniform2f(
+          carUniforms.u_calBody,
+          cal.hoodSplitX ?? 0.64,
+          cal.sillOffsetY ?? 0.13
+        );
+      }
 
       if (state.hasWrap && state.wrapTexture) {
         gl.activeTexture(gl.TEXTURE1);
@@ -1830,186 +1914,245 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
     }
 
     let cancelled = false;
-    const isMulti = wrapObj.mode === "multi";
-    const img = new window.Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      if (cancelled) return;
+
+    // ========================================================================
+    // SYSTEM 1 TEXTURE PIPELINE: Single-Sheet Continuous Unfolded Vinyl (1x)
+    // ========================================================================
+    async function buildSingleSheetTextureCanvas(singleWrap) {
+      const img = await loadImageElement(singleWrap.url);
       const texCanvas = document.createElement("canvas");
       texCanvas.width = 2048;
-      texCanvas.height = isMulti ? 2048 : 1024;
+      texCanvas.height = 1024;
       const ctx = texCanvas.getContext("2d");
       ctx.fillStyle = "#F4F5F7";
       ctx.fillRect(0, 0, texCanvas.width, texCanvas.height);
       ctx.drawImage(img, 0, 0, texCanvas.width, texCanvas.height);
 
-      // For Single Image unfolded skins: automatically bleed interior wrap colors over outer white/transparent margins, wheel-arch cutouts, and V-notches (works for both JPG and PNG)
-      if (!isMulti) {
-        const gw = 256;
-        const gh = 128;
-        const gridCanvas = document.createElement("canvas");
-        gridCanvas.width = gw;
-        gridCanvas.height = gh;
-        const gctx = gridCanvas.getContext("2d");
-        gctx.drawImage(img, 0, 0, gw, gh);
-        const imgData = gctx.getImageData(0, 0, gw, gh);
-        const data = imgData.data;
+      // Automatically bleed interior wrap colors over outer white/transparent margins, wheel-arch cutouts, and V-notches
+      const gw = 256;
+      const gh = 128;
+      const gridCanvas = document.createElement("canvas");
+      gridCanvas.width = gw;
+      gridCanvas.height = gh;
+      const gctx = gridCanvas.getContext("2d");
+      gctx.drawImage(img, 0, 0, gw, gh);
+      const imgData = gctx.getImageData(0, 0, gw, gh);
+      const data = imgData.data;
 
-        const isCornerBg = (x, y) => {
-          const idx = (y * gw + x) * 4;
-          return data[idx + 3] < 180 || (data[idx] > 228 && data[idx + 1] > 228 && data[idx + 2] > 228);
+      const isCornerBg = (x, y) => {
+        const idx = (y * gw + x) * 4;
+        return data[idx + 3] < 180 || (data[idx] > 228 && data[idx + 1] > 228 && data[idx + 2] > 228);
+      };
+      const cornerCount =
+        (isCornerBg(2, 2) ? 1 : 0) +
+        (isCornerBg(gw - 3, 2) ? 1 : 0) +
+        (isCornerBg(2, gh - 3) ? 1 : 0) +
+        (isCornerBg(gw - 3, gh - 3) ? 1 : 0);
+
+      if (cornerCount >= 3) {
+        const total = gw * gh;
+        const bgMask = new Uint8Array(total);
+        const queue = new Int32Array(total);
+        let qHead = 0;
+        let qTail = 0;
+
+        const isProtectedCore = (x, y) => {
+          const u = x / gw;
+          const v = y / gh;
+          if (u >= 0.25 && u <= 0.64 && v >= 0.38 && v <= 0.64) return true; // Roof core
+          if (u >= 0.25 && u <= 0.56 && v >= 0.11 && v <= 0.33) return true; // Driver core
+          if (u >= 0.25 && u <= 0.56 && v >= 0.68 && v <= 0.89) return true; // Passenger core
+          if (u >= 0.69 && u <= 0.91 && v >= 0.43 && v <= 0.57) return true; // Front core
+          if (u >= 0.06 && u <= 0.21 && v >= 0.39 && v <= 0.61) return true; // Rear core
+          return false;
         };
-        const cornerCount =
-          (isCornerBg(2, 2) ? 1 : 0) +
-          (isCornerBg(gw - 3, 2) ? 1 : 0) +
-          (isCornerBg(2, gh - 3) ? 1 : 0) +
-          (isCornerBg(gw - 3, gh - 3) ? 1 : 0);
 
-        if (cornerCount >= 3) {
-          const total = gw * gh;
-          const bgMask = new Uint8Array(total);
-          const queue = new Int32Array(total);
-          let qHead = 0;
-          let qTail = 0;
+        const isBgPixel = (idx) => {
+          const p = idx * 4;
+          return data[p + 3] < 180 || (data[p] > 224 && data[p + 1] > 224 && data[p + 2] > 224);
+        };
 
-          const isProtectedCore = (x, y) => {
-            const u = x / gw;
-            const v = y / gh;
-            if (u >= 0.25 && u <= 0.64 && v >= 0.38 && v <= 0.64) return true; // Roof core
-            if (u >= 0.25 && u <= 0.56 && v >= 0.11 && v <= 0.33) return true; // Driver core
-            if (u >= 0.25 && u <= 0.56 && v >= 0.68 && v <= 0.89) return true; // Passenger core
-            if (u >= 0.69 && u <= 0.91 && v >= 0.43 && v <= 0.57) return true; // Front core
-            if (u >= 0.06 && u <= 0.21 && v >= 0.39 && v <= 0.61) return true; // Rear core
-            return false;
-          };
-
-          const isBgPixel = (idx) => {
-            const p = idx * 4;
-            return data[p + 3] < 180 || (data[p] > 224 && data[p + 1] > 224 && data[p + 2] > 224);
-          };
-
-          for (let x = 0; x < gw; x++) {
-            const topIdx = x;
-            const botIdx = (gh - 1) * gw + x;
-            if (isBgPixel(topIdx)) {
-              bgMask[topIdx] = 1;
-              queue[qTail++] = topIdx;
-            }
-            if (isBgPixel(botIdx)) {
-              bgMask[botIdx] = 1;
-              queue[qTail++] = botIdx;
-            }
+        for (let x = 0; x < gw; x++) {
+          const topIdx = x;
+          const botIdx = (gh - 1) * gw + x;
+          if (isBgPixel(topIdx)) {
+            bgMask[topIdx] = 1;
+            queue[qTail++] = topIdx;
           }
-          for (let y = 1; y < gh - 1; y++) {
-            const leftIdx = y * gw;
-            const rightIdx = y * gw + (gw - 1);
-            if (isBgPixel(leftIdx)) {
-              bgMask[leftIdx] = 1;
-              queue[qTail++] = leftIdx;
-            }
-            if (isBgPixel(rightIdx)) {
-              bgMask[rightIdx] = 1;
-              queue[qTail++] = rightIdx;
-            }
+          if (isBgPixel(botIdx)) {
+            bgMask[botIdx] = 1;
+            queue[qTail++] = botIdx;
           }
-
-          const dirs = [-1, 1, -gw, gw];
-          while (qHead < qTail) {
-            const cur = queue[qHead++];
-            const cx = cur % gw;
-            const cy = (cur / gw) | 0;
-            for (let d = 0; d < 4; d++) {
-              const ni = cur + dirs[d];
-              if (ni < 0 || ni >= total || bgMask[ni]) continue;
-              const nx = ni % gw;
-              const ny = (ni / gw) | 0;
-              if (Math.abs(nx - cx) + Math.abs(ny - cy) !== 1) continue;
-              if (isProtectedCore(nx, ny)) continue;
-              if (isBgPixel(ni)) {
-                bgMask[ni] = 1;
-                queue[qTail++] = ni;
-              }
-            }
+        }
+        for (let y = 1; y < gh - 1; y++) {
+          const leftIdx = y * gw;
+          const rightIdx = y * gw + (gw - 1);
+          if (isBgPixel(leftIdx)) {
+            bgMask[leftIdx] = 1;
+            queue[qTail++] = leftIdx;
           }
-
-          // Expand mask by 3 cells inward to swallow outer dark wireframe borders & wheel-arch outlines
-          for (let step = 0; step < 3; step++) {
-            const nextMask = new Uint8Array(bgMask);
-            for (let y = 1; y < gh - 1; y++) {
-              for (let x = 1; x < gw - 1; x++) {
-                const idx = y * gw + x;
-                if (bgMask[idx] || isProtectedCore(x, y)) continue;
-                if (
-                  bgMask[idx - 1] ||
-                  bgMask[idx + 1] ||
-                  bgMask[idx - gw] ||
-                  bgMask[idx + gw]
-                ) {
-                  nextMask[idx] = 1;
-                }
-              }
-            }
-            bgMask.set(nextMask);
+          if (isBgPixel(rightIdx)) {
+            bgMask[rightIdx] = 1;
+            queue[qTail++] = rightIdx;
           }
+        }
 
-          const exteriorMask = new Uint8Array(bgMask);
-
-          // Multi-source BFS to dilate interior wrap colors outward into all bgMask==1 cells
-          qHead = 0;
-          qTail = 0;
-          for (let i = 0; i < total; i++) {
-            if (!bgMask[i]) {
-              queue[qTail++] = i;
-            }
-          }
-          while (qHead < qTail) {
-            const cur = queue[qHead++];
-            const cx = cur % gw;
-            const cy = (cur / gw) | 0;
-            const cp = cur * 4;
-            for (let d = 0; d < 4; d++) {
-              const ni = cur + dirs[d];
-              if (ni < 0 || ni >= total || !bgMask[ni]) continue;
-              const nx = ni % gw;
-              const ny = (ni / gw) | 0;
-              if (Math.abs(nx - cx) + Math.abs(ny - cy) !== 1) continue;
-              bgMask[ni] = 0;
-              const np = ni * 4;
-              data[np] = data[cp];
-              data[np + 1] = data[cp + 1];
-              data[np + 2] = data[cp + 2];
-              data[np + 3] = 255;
+        const dirs = [-1, 1, -gw, gw];
+        while (qHead < qTail) {
+          const cur = queue[qHead++];
+          const cx = cur % gw;
+          const cy = (cur / gw) | 0;
+          for (let d = 0; d < 4; d++) {
+            const ni = cur + dirs[d];
+            if (ni < 0 || ni >= total || bgMask[ni]) continue;
+            const nx = ni % gw;
+            const ny = (ni / gw) | 0;
+            if (Math.abs(nx - cx) + Math.abs(ny - cy) !== 1) continue;
+            if (isProtectedCore(nx, ny)) continue;
+            if (isBgPixel(ni)) {
+              bgMask[ni] = 1;
               queue[qTail++] = ni;
             }
           }
+        }
 
-          for (let i = 0; i < total; i++) {
-            data[i * 4 + 3] = exteriorMask[i] ? 255 : 0;
+        for (let step = 0; step < 3; step++) {
+          const nextMask = new Uint8Array(bgMask);
+          for (let y = 1; y < gh - 1; y++) {
+            for (let x = 1; x < gw - 1; x++) {
+              const idx = y * gw + x;
+              if (bgMask[idx] || isProtectedCore(x, y)) continue;
+              if (
+                bgMask[idx - 1] ||
+                bgMask[idx + 1] ||
+                bgMask[idx - gw] ||
+                bgMask[idx + gw]
+              ) {
+                nextMask[idx] = 1;
+              }
+            }
           }
-          gctx.putImageData(imgData, 0, 0);
-          // Overlay the dilated zero-margin bleed only over the exterior background/cutout region
-          ctx.drawImage(gridCanvas, 0, 0, texCanvas.width, texCanvas.height);
+          bgMask.set(nextMask);
+        }
+
+        const exteriorMask = new Uint8Array(bgMask);
+
+        qHead = 0;
+        qTail = 0;
+        for (let i = 0; i < total; i++) {
+          if (!bgMask[i]) {
+            queue[qTail++] = i;
+          }
+        }
+        while (qHead < qTail) {
+          const cur = queue[qHead++];
+          const cx = cur % gw;
+          const cy = (cur / gw) | 0;
+          const cp = cur * 4;
+          for (let d = 0; d < 4; d++) {
+            const ni = cur + dirs[d];
+            if (ni < 0 || ni >= total || !bgMask[ni]) continue;
+            const nx = ni % gw;
+            const ny = (ni / gw) | 0;
+            if (Math.abs(nx - cx) + Math.abs(ny - cy) !== 1) continue;
+            bgMask[ni] = 0;
+            const np = ni * 4;
+            data[np] = data[cp];
+            data[np + 1] = data[cp + 1];
+            data[np + 2] = data[cp + 2];
+            data[np + 3] = 255;
+            queue[qTail++] = ni;
+          }
+        }
+
+        for (let i = 0; i < total; i++) {
+          data[i * 4 + 3] = exteriorMask[i] ? 255 : 0;
+        }
+        gctx.putImageData(imgData, 0, 0);
+        ctx.drawImage(gridCanvas, 0, 0, texCanvas.width, texCanvas.height);
+      }
+
+      return texCanvas;
+    }
+
+    // ========================================================================
+    // SYSTEM 2 TEXTURE PIPELINE: 5-Panel Multi-View Atlas Composer (5x)
+    // ========================================================================
+    async function buildMultiPanelTextureCanvas(multiWrap) {
+      const texCanvas = document.createElement("canvas");
+      texCanvas.width = 2048;
+      texCanvas.height = 2048;
+      const ctx = texCanvas.getContext("2d");
+      ctx.fillStyle = "#F4F5F7";
+      ctx.fillRect(0, 0, texCanvas.width, texCanvas.height);
+
+      // If wrap has 5 separate view URLs (from built-in 5-panel folder) and no pre-built atlas blob:
+      if (multiWrap.views && !multiWrap.isCustom) {
+        const regions = {
+          left: { x: 0, y: 0, w: 1024, h: 1024 },
+          right: { x: 1024, y: 0, w: 1024, h: 1024 },
+          front: { x: 0, y: 1024, w: 682, h: 1024 },
+          rear: { x: 682, y: 1024, w: 683, h: 1024 },
+          top: { x: 1365, y: 1024, w: 683, h: 1024 },
+        };
+        const viewKeyMap = {
+          left: multiWrap.views.left,
+          right: multiWrap.views.right,
+          front: multiWrap.views.front,
+          rear: multiWrap.views.rear,
+          top: multiWrap.views.top || multiWrap.views.roof,
+        };
+        for (const [slotKey, srcUrl] of Object.entries(viewKeyMap)) {
+          if (!srcUrl) continue;
+          try {
+            const slotImg = await loadImageElement(srcUrl);
+            const r = regions[slotKey];
+            ctx.drawImage(slotImg, r.x, r.y, r.w, r.h);
+          } catch {
+            // Leave unassigned or failed slot as Pearl White
+          }
+        }
+        return texCanvas;
+      }
+
+      // Otherwise load pre-composed 5-panel atlas image directly
+      const img = await loadImageElement(multiWrap.url);
+      ctx.drawImage(img, 0, 0, texCanvas.width, texCanvas.height);
+      return texCanvas;
+    }
+
+    async function loadActiveWrapTexture() {
+      try {
+        const isMulti = wrapObj.mode === "multi";
+        const texCanvas = isMulti
+          ? await buildMultiPanelTextureCanvas(wrapObj)
+          : await buildSingleSheetTextureCanvas(wrapObj);
+        if (cancelled) return;
+
+        if (state.wrapTexture) {
+          gl.deleteTexture(state.wrapTexture);
+        }
+        gl.activeTexture(gl.TEXTURE1);
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texCanvas);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        state.wrapTexture = tex;
+        state.wrapMode = isMulti ? 1 : 0;
+        state.hasWrap = true;
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Failed to load wrap texture:", err);
         }
       }
+    }
 
-      if (state.wrapTexture) {
-        gl.deleteTexture(state.wrapTexture);
-      }
-      gl.activeTexture(gl.TEXTURE1);
-      const tex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texCanvas);
-      gl.generateMipmap(gl.TEXTURE_2D);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-
-      state.wrapTexture = tex;
-      state.wrapMode = isMulti ? 1 : 0;
-      state.hasWrap = true;
-    };
-    img.src = wrapObj.url;
+    loadActiveWrapTexture();
 
     return () => {
       cancelled = true;
@@ -2217,6 +2360,19 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
         const finalName = pendingWrapName.trim() || "Multi-View Fleet Wrap";
         const { atlasBuffer, thumbBuffer } = await buildMultiViewAtlasBuffers(pendingMultiViews);
 
+        const viewBuffers = {};
+        const views = {};
+        for (const slot of MULTI_VIEW_SLOTS) {
+          const entry = pendingMultiViews[slot.id];
+          if (entry?.file) {
+            const buf = await entry.file.arrayBuffer();
+            viewBuffers[slot.id] = buf;
+            views[slot.id] = URL.createObjectURL(
+              new Blob([buf], { type: entry.file.type || "image/png" })
+            );
+          }
+        }
+
         await saveCustomWrapToDB({
           id,
           name: finalName,
@@ -2224,6 +2380,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
           mimeType: "image/png",
           buffer: atlasBuffer,
           thumbBuffer,
+          viewBuffers,
           createdAt: Date.now(),
         });
 
@@ -2235,6 +2392,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
           name: finalName,
           url,
           thumbUrl,
+          views,
           mode: "multi",
           isCustom: true,
         };
@@ -2814,12 +2972,19 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
         </div>
       )}
 
-      {/* Floating Live 6-Parameter Wrap Calibration Popover (Above Bottom Dock) */}
-      {isTuneOpen && activeWrapId !== "none" && activeWrap?.mode !== "multi" && (
-        <section className="wrap-tune-popover" aria-label="Adjust wrap seams and alignment">
+      {/* Floating Live 6-Parameter Wrap Calibration Popover (Independent 1x Single & 5x Multi Engines) */}
+      {isTuneOpen && activeWrapId !== "none" && (
+        <section className="wrap-tune-popover" aria-label="Adjust wrap alignment">
           <div className="tune-header">
             <div className="tune-title-wrap">
-              <span className="tune-title">Adjust Wrap Alignment</span>
+              <div className="tune-title-row">
+                <span className="tune-title">
+                  {isActiveWrapMulti ? "Adjust 5-Panel Wrap" : "Adjust Single-Sheet Wrap"}
+                </span>
+                <span className={`tune-mode-pill${isActiveWrapMulti ? " is-multi" : " is-single"}`}>
+                  {isActiveWrapMulti ? "5× Multi" : "1× Single"}
+                </span>
+              </div>
               <span className="tune-subtitle">
                 Saved automatically for {activeModel?.name} · {activeWrap?.name}
               </span>
@@ -2847,15 +3012,12 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
           </div>
 
           <div className="tune-grid">
-            {WRAP_CALIBRATION_CONTROLS.map((ctrl) => {
-              const val = Number(wrapCal[ctrl.key] ?? DEFAULT_WRAP_CALIBRATION[ctrl.key]);
+            {activeCalControls.map((ctrl) => {
+              const val = Number(wrapCal[ctrl.key] ?? activeDefaultCal[ctrl.key]);
               return (
                 <label key={ctrl.key} className="tune-slider-item">
                   <span className="tune-slider-top">
-                    <span className="tune-slider-label">
-                      {ctrl.label}
-                      <span className="tune-slider-hint">{ctrl.hint}</span>
-                    </span>
+                    <span className="tune-slider-label">{ctrl.label}</span>
                     <span className="tune-slider-val">{Math.round(val * 100)}%</span>
                   </span>
                   <input
@@ -2922,14 +3084,14 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
           </button>
         </div>
 
-        {activeWrapId !== "none" && activeWrap?.mode !== "multi" && (
+        {activeWrapId !== "none" && (
           <>
             <div className="dock-divider" />
             <button
               type="button"
               className={`dock-tune-btn${isTuneOpen ? " is-active" : ""}`}
               onClick={() => setIsTuneOpen((open) => !open)}
-              title="Adjust wrap seam alignment on vehicle"
+              title="Adjust wrap alignment on vehicle"
               aria-expanded={isTuneOpen}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -3050,6 +3212,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
           {/* Wrap Designs */}
           {wraps.map((wrap) => {
             const isSelected = activeWrapId === wrap.id;
+            const isMultiWrap = wrap.mode === "multi";
             return (
               <div
                 key={wrap.id}
@@ -3071,13 +3234,21 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                   <span className="swatch-sheen" />
                 </span>
                 <span className="swatch-body">
-                  <span className="swatch-name">{wrap.name}</span>
+                  <span className="swatch-name-row">
+                    <span className="swatch-name">{wrap.name}</span>
+                    <span
+                      className={`swatch-mode-badge${isMultiWrap ? " is-multi" : " is-single"}`}
+                      title={
+                        isMultiWrap
+                          ? "5-Panel Multi-View Wrap System (5×)"
+                          : "Single-Sheet Continuous Wrap System (1×)"
+                      }
+                    >
+                      {isMultiWrap ? "5×" : "1×"}
+                    </span>
+                  </span>
                   <span className="swatch-tag">
-                    {wrap.isCustom
-                      ? wrap.mode === "multi"
-                        ? "Multi-View Wrap"
-                        : "Single Image Wrap"
-                      : "Full Body Vinyl"}
+                    {isMultiWrap ? "5-Panel Multi-View" : "Single-Sheet Vinyl"}
                   </span>
                 </span>
                 <button
@@ -3484,13 +3655,50 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
               <div>
                 <span className="modal-eyebrow">
                   {previewWrap
-                    ? "2D Unfolded Wrap Artwork · Interactive Magnifier"
+                    ? previewWrap.mode === "multi"
+                      ? "5× Multi-View Wrap Artwork · Interactive Magnifier"
+                      : "1× Single-Sheet Unfolded Wrap Artwork · Interactive Magnifier"
                     : "Reference Template · 2:1 Aspect Ratio"}
                 </span>
                 <h2>{previewWrap ? previewWrap.name : "Unfolded Vehicle Skin Reference"}</h2>
               </div>
 
               <div className="ref-lightbox-toolbar">
+                {previewWrap?.mode === "multi" && previewWrap?.views && (
+                  <div className="lightbox-view-pills" role="tablist" aria-label="Select 5-Panel View">
+                    {[
+                      { id: "atlas", label: "5× Sheet", src: previewWrap.url },
+                      { id: "left", label: "Driver", src: previewWrap.views.left },
+                      { id: "right", label: "Passenger", src: previewWrap.views.right },
+                      { id: "front", label: "Front", src: previewWrap.views.front },
+                      { id: "rear", label: "Rear", src: previewWrap.views.rear },
+                      {
+                        id: "top",
+                        label: "Roof",
+                        src: previewWrap.views.top || previewWrap.views.roof,
+                      },
+                    ]
+                      .filter((v) => Boolean(v.src))
+                      .map((v) => (
+                        <button
+                          key={v.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={previewMultiViewSlot === v.id}
+                          className={`lightbox-view-pill${
+                            previewMultiViewSlot === v.id ? " is-active" : ""
+                          }`}
+                          onClick={() => {
+                            resetLightboxTransform();
+                            setPreviewMultiViewSlot(v.id);
+                          }}
+                        >
+                          {v.label}
+                        </button>
+                      ))}
+                  </div>
+                )}
+
                 {/* Interactive Magnifier & Zoom Controls */}
                 <div className="lightbox-zoom-bar" role="group" aria-label="Zoom controls">
                   <button
@@ -3596,7 +3804,14 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                   className="ref-lightbox-img"
                   style={{
                     backgroundImage: `url("${
-                      previewWrap ? previewWrap.url : "/templates/unfolded-wrap-reference.png"
+                      previewWrap
+                        ? (previewWrap.mode === "multi" &&
+                            previewWrap.views &&
+                            previewMultiViewSlot !== "atlas" &&
+                            (previewWrap.views[previewMultiViewSlot] ||
+                              (previewMultiViewSlot === "top" ? previewWrap.views.roof : ""))) ||
+                          previewWrap.url
+                        : "/templates/unfolded-wrap-reference.png"
                     }")`,
                     transform: `translate3d(${lightboxPan.x}px, ${lightboxPan.y}px, 0) scale(${lightboxZoom})`,
                   }}

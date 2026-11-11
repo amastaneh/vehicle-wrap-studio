@@ -632,6 +632,13 @@ button {
   flex: 1;
 }
 
+.swatch-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .swatch-name {
   font-size: 13.5px;
   font-weight: 600;
@@ -640,6 +647,34 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.swatch-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 17px;
+  padding: 0 5.5px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.swatch-mode-badge.is-single {
+  background: rgba(15, 23, 42, 0.075);
+  color: var(--ink-secondary);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.swatch-mode-badge.is-multi {
+  background: rgba(0, 113, 227, 0.1);
+  color: #0066cc;
+  border: 1px solid rgba(0, 113, 227, 0.2);
 }
 
 .swatch-tag {
@@ -2301,6 +2336,68 @@ button {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.tune-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.tune-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.tune-mode-pill.is-single {
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--ink);
+}
+
+.tune-mode-pill.is-multi {
+  background: rgba(0, 113, 227, 0.12);
+  color: #0066cc;
+}
+
+.lightbox-view-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.lightbox-view-pill {
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+
+.lightbox-view-pill:hover {
+  color: var(--ink);
+}
+
+.lightbox-view-pill.is-active {
+  background: var(--ink);
+  color: #ffffff;
 }
 
 .lightbox-zoom-bar {
