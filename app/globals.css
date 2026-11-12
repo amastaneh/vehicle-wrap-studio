@@ -2565,28 +2565,128 @@ button {
   }
 }
 
+.inspector-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.inspector-gh-link,
 .inspector-credits-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 100%;
-  margin-top: 8px;
-  padding: 6px 10px;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
   border: none;
   border-radius: 10px;
-  background: transparent;
-  color: var(--ink-muted);
+  background: rgba(15, 23, 42, 0.035);
+  color: var(--ink-secondary);
   font-family: inherit;
   font-size: 11px;
   font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
   cursor: pointer;
-  transition: color 140ms ease, background 140ms ease;
+  transition: color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
+.inspector-gh-link:hover,
 .inspector-credits-btn:hover {
   color: var(--ink);
-  background: rgba(15, 23, 42, 0.05);
+  background: rgba(15, 23, 42, 0.075);
+}
+
+/* Apple VisionOS GitHub Star & Fork Split Pill in Top Header */
+.header-gh-group {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.055);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.header-gh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.header-gh-btn:hover {
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.1);
+}
+
+.header-gh-sep {
+  width: 1px;
+  height: 13px;
+  background: rgba(15, 23, 42, 0.12);
+  margin: 0 1px;
+}
+
+.gh-star-glyph {
+  color: #f59e0b;
+  font-size: 11.5px;
+  line-height: 1;
+  transition: transform 160ms ease;
+}
+
+.header-gh-btn.is-star:hover .gh-star-glyph,
+.header-gh-mobile-btn:hover .gh-star-glyph,
+.inspector-gh-link:hover .gh-star-glyph {
+  transform: scale(1.2) rotate(-8deg);
+}
+
+.gh-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.header-mobile-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.header-gh-mobile-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.065);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 .ref-download-link {

@@ -799,9 +799,14 @@ async function parseGLB(arrayBuffer) {
     }
   }
 
+  // First pass: detect painted body vertices (bodyMask = 1.0) and find the exact painted-metal bounding box
+  // (excluding rubber tires below the sill, antennas above the roof, and plastic side mirrors sticking out laterally)
+  let bMinX = Infinity, bMaxX = -Infinity;
+  let bMinY = Infinity, bMaxY = -Infinity;
+  let bMinZ = Infinity, bMaxZ = -Infinity;
+
   for (const part of rawParts) {
     const bodyMask = new Float32Array(part.vertCount);
-    const normCoords = new Float32Array(part.vertCount * 3);
 
     const isTier3Body =
       !hasAnyNamedBody &&
@@ -814,18 +819,7 @@ async function parseGLB(arrayBuffer) {
       const wx = part.positions[i * 3];
       const wy = part.positions[i * 3 + 1];
       const wz = part.positions[i * 3 + 2];
-
-      const nx = (wx - minX) / sizeX;
       const ny = (wy - minY) / sizeY;
-      const nz = (wz - minZ) / sizeZ;
-
-      normCoords[i * 3] = nx;
-      normCoords[i * 3 + 1] = ny;
-      normCoords[i * 3 + 2] = nz;
-
-      part.positions[i * 3] = (wx - cx) * scale;
-      part.positions[i * 3 + 1] = (wy - cy) * scale;
-      part.positions[i * 3 + 2] = (wz - cz) * scale;
 
       if (hasAnyNamedBody) {
         if (part.isNamedBody) {
@@ -855,8 +849,48 @@ async function parseGLB(arrayBuffer) {
       } else if (isTier3Body) {
         bodyMask[i] = 1.0;
       }
+
+      if (bodyMask[i] > 0.5) {
+        if (wx < bMinX) bMinX = wx;
+        if (wx > bMaxX) bMaxX = wx;
+        if (wy < bMinY) bMinY = wy;
+        if (wy > bMaxY) bMaxY = wy;
+        if (wz < bMinZ) bMinZ = wz;
+        if (wz > bMaxZ) bMaxZ = wz;
+      }
     }
     part.bodyMask = bodyMask;
+  }
+
+  // Fallback to full model bounds if no painted body bounds were isolated
+  if (!Number.isFinite(bMinX) || bMaxX - bMinX < 0.01) {
+    bMinX = minX;
+    bMaxX = maxX;
+    bMinY = minY;
+    bMaxY = maxY;
+    bMinZ = minZ;
+    bMaxZ = maxZ;
+  }
+  const bSizeX = bMaxX - bMinX || 1;
+  const bSizeY = bMaxY - bMinY || 1;
+  const bSizeZ = bMaxZ - bMinZ || 1;
+
+  // Second pass: normalize normCoords strictly to the painted metal body shell (0.0 = exact metal sill/edge, 1.0 = exact metal roof/edge)
+  for (const part of rawParts) {
+    const normCoords = new Float32Array(part.vertCount * 3);
+    for (let i = 0; i < part.vertCount; i++) {
+      const wx = part.positions[i * 3];
+      const wy = part.positions[i * 3 + 1];
+      const wz = part.positions[i * 3 + 2];
+
+      normCoords[i * 3] = Math.max(0, Math.min(1, (wx - bMinX) / bSizeX));
+      normCoords[i * 3 + 1] = Math.max(0, Math.min(1, (wy - bMinY) / bSizeY));
+      normCoords[i * 3 + 2] = Math.max(0, Math.min(1, (wz - bMinZ) / bSizeZ));
+
+      part.positions[i * 3] = (wx - cx) * scale;
+      part.positions[i * 3 + 1] = (wy - cy) * scale;
+      part.positions[i * 3 + 2] = (wz - cz) * scale;
+    }
     part.normCoords = normCoords;
   }
 
@@ -924,68 +958,49 @@ uniform float u_floorY;
 
 out vec4 outColor;
 
-// Engine 1 (1x Single-Sheet): Continuous Unfolded Vinyl Sheet Mapping (Single UV lookup, zero multi-image ghosting)
+// Engine 1 (1x Single-Sheet): Pure Continuous 1-Piece Vinyl Sheet Unfolding (Zero normal cuts, single UV lookup)
 vec3 sampleSingleSheetWrap(vec3 normCoord, vec4 calSeam, vec2 calBody) {
-  float rearSeamX = calSeam.x;
-  float frontSeamX = calSeam.y;
-  float driverSeamY = calSeam.z;
-  float passengerSeamY = calSeam.w;
-  float hoodSplitX = calBody.x;
-  float sillOffsetY = calBody.y;
+  // 6 Whole-Sheet Controls (0.50 = neutral default)
+  float scaleX = mix(1.32, 0.74, calSeam.x);       // 1. Sheet Length Scale (Front-to-Rear)
+  float scaleY = mix(1.32, 0.74, calSeam.y);       // 2. Sheet Width / Side Drop Scale
+  float offsetX = (calSeam.z - 0.50) * 0.30;       // 3. Move Sheet Forward / Back
+  float offsetY = (calSeam.w - 0.50) * 0.26;       // 4. Move Sheet Left / Right
+  float roofHalfWidth = mix(0.115, 0.215, calBody.x); // 5. Roof Crown Width (default ~0.165)
+  float endPull = mix(0.45, 1.45, calBody.y);      // 6. Hood & Rear Door Pull
 
+  // normCoord (0..1) is normalized strictly to the painted metal body shell (tires & mirrors excluded)
   float normX = clamp(normCoord.x, 0.0, 1.0);
   float normY = clamp(normCoord.y, 0.0, 1.0);
   float normZ = clamp(normCoord.z, 0.0, 1.0);
 
-  // Vertical position on metal body from lower sill (0.0) to roof top (1.0), and downward fold drop (0.0 at roof -> 1.0 at sill)
-  float bodyY = clamp((normY - sillOffsetY) / max(0.25, 0.99 - sillOffsetY), 0.0, 1.0);
-  float drop = 1.0 - bodyY;
+  // Vertical drop along the painted body shell:
+  // 0.0 at the roof line (normY ~ 0.96) -> 1.0 at the lower door rocker sill (normY ~ 0.18, above tires/black trim)
+  float drop = clamp((0.96 - normY) / 0.78, 0.0, 1.0);
 
-  // Signed lateral coordinate (-1.0 Driver Side -> 0.0 Center -> +1.0 Passenger Side)
-  float zSigned = (normZ - 0.5) * 2.0;
-  float sideReach = smoothstep(0.30, 0.86, abs(zSigned));
+  // Signed lateral position (-1.0 Driver wall -> 0.0 Roof centerline -> +1.0 Passenger wall)
+  float zSigned = (normZ - 0.50) * 2.0;
 
-  // Keep side drop above wheel-arch cutouts on the unfolded 2D skin
-  float rearWheelArch = 0.22 * exp(-pow((normX - 0.17) / 0.10, 2.0));
-  float frontWheelArch = 0.24 * exp(-pow((normX - 0.81) / 0.11, 2.0));
-  float maxSideDrop = 1.0 - max(rearWheelArch, frontWheelArch);
-  float sideFoldT = min(clamp(drop * mix(0.32, 1.0, sideReach), 0.0, 1.0), maxSideDrop);
+  // Roof lateral span reaches +/-1.0 at the roof rails (abs(zSigned) ~ 0.68) and stays constant down the side walls
+  // so the Roof stays strictly on the roof (0.348..0.682) and the full Side Flap (Green + White/Lion + Red: 0.682..0.985)
+  // fits completely on the metal side wall from roof rail (drop=0) to lower door sill (drop=1)
+  float roofLateral = clamp(zSigned / 0.68, -1.0, 1.0);
+  float sideSign = tanh(zSigned * 5.0);
+  float vRaw = 0.515
+    + roofLateral * roofHalfWidth
+    + sideSign * drop * (0.300 / max(0.55, scaleY));
+  float vFinal = clamp(vRaw - offsetY * sideSign, 0.010, 0.990);
 
-  // Base roof V coordinate between driverSeamY and passengerSeamY, unfolding continuously up/down onto Driver & Passenger sides
-  float vRoof = mix(driverSeamY, passengerSeamY, normZ);
-  float targetSideV = mix(0.048, 0.952, smoothstep(-0.16, 0.16, zSigned));
-  float vSideAndRoof = mix(vRoof, targetSideV, sideFoldT * sideReach);
+  // Continuous longitudinal unfolding (U) from Rear (0.200) to Front (0.728) along the body,
+  // with smooth continuous sheet pull down the Front Hood/Bumper (+U) and Rear Doors (-U) along the center corridor
+  float centerCorridor = 1.0 - smoothstep(0.42, 0.82, abs(zSigned));
+  float xScaled = clamp((normX - 0.50) * scaleX + 0.50 - offsetX, 0.0, 1.0);
+  float uBase = mix(0.200, 0.728, xScaled);
 
-  // Longitudinal U progression along the roof & side body (from rear edge to windshield/hood split)
-  float bodySpanT = clamp((normX - 0.05) / max(0.15, hoodSplitX - 0.05), 0.0, 1.0);
-  float uMain = mix(rearSeamX, frontSeamX, bodySpanT);
+  float uFrontPull = centerCorridor * smoothstep(0.56, 1.0, xScaled) * (0.175 + 0.085 * drop) * endPull;
+  float uRearPull = centerCorridor * (1.0 - smoothstep(0.0, 0.15, xScaled)) * drop * 0.185 * endPull;
+  float uFinal = clamp(uBase + uFrontPull - uRearPull, 0.008, 0.992);
 
-  // Front unfolding (normX > hoodSplitX): extends continuously from frontSeamX out to 0.948 on hood/bumper, or frontSeamX+0.042 on front fenders
-  float frontT = clamp((normX - hoodSplitX) / max(0.12, 1.0 - hoodSplitX), 0.0, 1.0);
-  float frontCenterCorridor = 1.0 - smoothstep(0.58, 0.92, abs(zSigned));
-  float uFrontHood = mix(frontSeamX, 0.948, clamp(0.76 * frontT + 0.24 * drop, 0.0, 1.0));
-  float uFrontFender = mix(frontSeamX, min(0.95, frontSeamX + 0.042), frontT);
-  float uWithFront = normX > hoodSplitX
-    ? mix(uFrontFender, uFrontHood, frontCenterCorridor)
-    : uMain;
-
-  float vFrontHood = mix(
-    mix(driverSeamY + 0.010, driverSeamY + 0.050, frontT),
-    mix(passengerSeamY - 0.010, passengerSeamY - 0.050, frontT),
-    normZ
-  );
-  float frontBlend = smoothstep(hoodSplitX - 0.03, hoodSplitX + 0.06, normX) * frontCenterCorridor;
-  float vWithFront = mix(vSideAndRoof, vFrontHood, frontBlend);
-
-  // Rear unfolding (normX near 0.0): unfolds continuously leftward from rearSeamX to 0.048 as drop increases down the rear doors
-  float rearCorridor = (1.0 - smoothstep(0.02, 0.11, normX)) * (1.0 - smoothstep(0.64, 0.92, abs(zSigned)));
-  float uRearDoor = mix(rearSeamX, 0.048, drop);
-  float vRearDoor = mix(driverSeamY + 0.010, passengerSeamY - 0.010, normZ);
-
-  float uFinal = mix(uWithFront, uRearDoor, rearCorridor);
-  float vFinal = mix(vWithFront, vRearDoor, rearCorridor);
-
-  return texture(u_wrapTex, clamp(vec2(uFinal, vFinal), 0.01, 0.99)).rgb;
+  return texture(u_wrapTex, vec2(uFinal, vFinal)).rgb;
 }
 
 // Engine 2 (5x Multi-View): Independent 5-Panel Orthographic Projection with Dedicated 5-View Calibration
@@ -1195,27 +1210,27 @@ void main() {
 }
 `;
 
-const WRAP_CAL_STORAGE_KEY = "vws_wrap_calibration_v2";
+const WRAP_CAL_STORAGE_KEY = "vws_wrap_calibration_v4";
 
 // ============================================================================
-// SYSTEM 1: SINGLE-SHEET CONTINUOUS WRAP CALIBRATION (1x Mode)
+// SYSTEM 1: SINGLE-SHEET CONTINUOUS WRAP CALIBRATION (1x Mode — Whole Sheet)
 // ============================================================================
 const DEFAULT_SINGLE_WRAP_CALIBRATION = {
-  rearSeamX: 0.24,
-  frontSeamX: 0.665,
-  driverSeamY: 0.36,
-  passengerSeamY: 0.665,
-  hoodSplitX: 0.64,
-  sillOffsetY: 0.13,
+  scaleX: 0.50,
+  scaleY: 0.50,
+  offsetX: 0.50,
+  offsetY: 0.50,
+  roofFold: 0.50,
+  endPull: 0.50,
 };
 
 const SINGLE_WRAP_CALIBRATION_CONTROLS = [
-  { key: "rearSeamX", label: "Rear Fold Line", min: 0.05, max: 0.42, step: 0.005 },
-  { key: "frontSeamX", label: "Front Fold Line", min: 0.45, max: 0.90, step: 0.005 },
-  { key: "driverSeamY", label: "Driver Roof Edge", min: 0.15, max: 0.49, step: 0.005 },
-  { key: "passengerSeamY", label: "Passenger Roof Edge", min: 0.51, max: 0.85, step: 0.005 },
-  { key: "hoodSplitX", label: "Hood / Cab Split", min: 0.40, max: 0.88, step: 0.005 },
-  { key: "sillOffsetY", label: "Lower Sill Reach", min: 0.00, max: 0.32, step: 0.005 },
+  { key: "scaleX", label: "Sheet Length Scale", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "scaleY", label: "Sheet Side Drop", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "offsetX", label: "Shift Forward / Back", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "offsetY", label: "Shift Up / Down", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "roofFold", label: "Roof Crown Width", min: 0.10, max: 0.90, step: 0.005 },
+  { key: "endPull", label: "Hood & Rear Fold", min: 0.10, max: 0.90, step: 0.005 },
 ];
 
 // ============================================================================
@@ -1312,6 +1327,26 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
   // Mobile Collapsible Wrap Bottom Sheet State
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
+
+  // Live GitHub Repo Metrics (Stars & Forks)
+  const [ghStats, setGhStats] = useState({ stars: null, forks: null });
+
+  useEffect(() => {
+    let active = true;
+    fetch("https://api.github.com/repos/amastaneh/vehicle-wrap-studio")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!active || !data) return;
+        setGhStats({
+          stars: typeof data.stargazers_count === "number" ? data.stargazers_count : null,
+          forks: typeof data.forks_count === "number" ? data.forks_count : null,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const canvasRef = useRef(null);
   const pickerRef = useRef(null);
@@ -1732,15 +1767,15 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
       } else {
         gl.uniform4f(
           carUniforms.u_calSeam,
-          cal.rearSeamX ?? 0.24,
-          cal.frontSeamX ?? 0.665,
-          cal.driverSeamY ?? 0.36,
-          cal.passengerSeamY ?? 0.665
+          cal.scaleX ?? 0.5,
+          cal.scaleY ?? 0.5,
+          cal.offsetX ?? 0.5,
+          cal.offsetY ?? 0.5
         );
         gl.uniform2f(
           carUniforms.u_calBody,
-          cal.hoodSplitX ?? 0.64,
-          cal.sillOffsetY ?? 0.13
+          cal.roofFold ?? 0.5,
+          cal.endPull ?? 0.5
         );
       }
 
@@ -2562,24 +2597,42 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
             <span className="brand-title">Vehicle Wrap Studio</span>
           </div>
 
-          <button
-            type="button"
-            className="header-cc-btn is-mobile-only"
-            onClick={() => {
-              setIsPickerOpen(false);
-              setCreditsViewMode(activeModel?.credit ? "active" : "all");
-              setIsCreditsModalOpen(true);
-            }}
-            title="View 3D Model Credits & CC BY Licenses"
-            aria-label="View 3D model license and creator credits"
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="9.5" />
-              <path d="M10.2 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
-              <path d="M15.8 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
-            </svg>
-            <span>{activeModel?.credit ? "CC BY" : "Credits"}</span>
-          </button>
+          <div className="header-mobile-actions is-mobile-only">
+            <a
+              href="https://github.com/amastaneh/vehicle-wrap-studio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="header-gh-mobile-btn"
+              title="Star or Fork Vehicle Wrap Studio on GitHub"
+              aria-label="Star or Fork Vehicle Wrap Studio on GitHub"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z" />
+              </svg>
+              <span className="gh-star-glyph" aria-hidden="true">★</span>
+              <span>Star</span>
+              {ghStats.stars > 0 && <span className="gh-count-pill">{ghStats.stars}</span>}
+            </a>
+
+            <button
+              type="button"
+              className="header-cc-btn"
+              onClick={() => {
+                setIsPickerOpen(false);
+                setCreditsViewMode(activeModel?.credit ? "active" : "all");
+                setIsCreditsModalOpen(true);
+              }}
+              title="View 3D Model Credits & CC BY Licenses"
+              aria-label="View 3D model license and creator credits"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="9.5" />
+                <path d="M10.2 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+                <path d="M15.8 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+              </svg>
+              <span>{activeModel?.credit ? "CC BY" : "Credits"}</span>
+            </button>
+          </div>
         </div>
 
         <div className="header-divider" />
@@ -2725,6 +2778,42 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
             </button>
           </>
         )}
+
+        {/* Open-Source GitHub Star & Fork Split Pill (Desktop) */}
+        <div className="header-divider is-desktop-only" />
+        <div className="header-gh-group is-desktop-only" role="group" aria-label="GitHub repository actions">
+          <a
+            href="https://github.com/amastaneh/vehicle-wrap-studio"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="header-gh-btn is-star"
+            title="Star amastaneh/vehicle-wrap-studio on GitHub"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z" />
+            </svg>
+            <span className="gh-star-glyph" aria-hidden="true">★</span>
+            <span>Star</span>
+            {ghStats.stars > 0 && <span className="gh-count-pill">{ghStats.stars}</span>}
+          </a>
+          <span className="header-gh-sep" aria-hidden="true" />
+          <a
+            href="https://github.com/amastaneh/vehicle-wrap-studio/fork"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="header-gh-btn is-fork"
+            title="Fork amastaneh/vehicle-wrap-studio on GitHub"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="6" cy="6" r="3" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="12" cy="18" r="3" />
+              <path d="M6 9v1a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9M12 12v3" />
+            </svg>
+            <span>Fork</span>
+            {ghStats.forks > 0 && <span className="gh-count-pill">{ghStats.forks}</span>}
+          </a>
+        </div>
       </header>
 
       {/* Apple-Style Local 3D Vehicle (.glb) Import & Model Directory Modal */}
@@ -3297,22 +3386,38 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
             <span>Import Custom Wrap</span>
           </button>
 
-          <button
-            type="button"
-            className="inspector-credits-btn"
-            onClick={() => {
-              setCreditsViewMode(activeModel?.credit ? "active" : "all");
-              setIsCreditsModalOpen(true);
-            }}
-            title="View 3D Model Credits & CC BY Licenses"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="9.5" />
-              <path d="M10.2 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
-              <path d="M15.8 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
-            </svg>
-            <span>3D Model Credits · CC BY 4.0</span>
-          </button>
+          <div className="inspector-meta-row">
+            <a
+              href="https://github.com/amastaneh/vehicle-wrap-studio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inspector-gh-link"
+              title="Star or Fork Vehicle Wrap Studio on GitHub"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z" />
+              </svg>
+              <span className="gh-star-glyph" aria-hidden="true">★</span>
+              <span>GitHub · Star / Fork</span>
+            </a>
+
+            <button
+              type="button"
+              className="inspector-credits-btn"
+              onClick={() => {
+                setCreditsViewMode(activeModel?.credit ? "active" : "all");
+                setIsCreditsModalOpen(true);
+              }}
+              title="View 3D Model Credits & CC BY Licenses"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="9.5" />
+                <path d="M10.2 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+                <path d="M15.8 9.7a2.4 2.4 0 1 0 0 4.6" strokeLinecap="round" />
+              </svg>
+              <span>3D Credits · CC BY</span>
+            </button>
+          </div>
         </div>
       </aside>
 
