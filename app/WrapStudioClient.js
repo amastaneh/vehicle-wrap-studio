@@ -1438,7 +1438,21 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
 
   function openWrapArtworkPreview(wrap) {
     resetLightboxTransform();
-    setPreviewMultiViewSlot("atlas");
+    const hasSeparateViews =
+      wrap?.mode === "multi" && wrap?.views && Object.keys(wrap.views).length > 0;
+    const defaultSlot =
+      hasSeparateViews && !wrap.isCustom
+        ? wrap.views.left
+          ? "left"
+          : wrap.views.right
+          ? "right"
+          : wrap.views.front
+          ? "front"
+          : wrap.views.rear
+          ? "rear"
+          : "top"
+        : "atlas";
+    setPreviewMultiViewSlot(defaultSlot);
     setPreviewWrap(wrap);
   }
 
@@ -3866,7 +3880,9 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                 {previewWrap?.mode === "multi" && previewWrap?.views && (
                   <div className="lightbox-view-pills" role="tablist" aria-label="Select 5-Panel View">
                     {[
-                      { id: "atlas", label: "5× Sheet", src: previewWrap.url },
+                      ...(previewWrap.isCustom
+                        ? [{ id: "atlas", label: "5× Sheet", src: previewWrap.url }]
+                        : []),
                       { id: "left", label: "Driver", src: previewWrap.views.left },
                       { id: "right", label: "Passenger", src: previewWrap.views.right },
                       { id: "front", label: "Front", src: previewWrap.views.front },
