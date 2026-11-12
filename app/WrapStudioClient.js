@@ -996,16 +996,11 @@ vec3 sampleSingleSheetWrap(vec3 normCoord, vec4 calA, vec4 calB, vec4 calC) {
   float uRear  = centerCorridor * (1.0 - smoothstep(0.0, max(0.05, uStart * 0.80), normCoord.x)) * rearDoorPull * dropPos;
   float uRaw = uBase + uFront - uRear;
 
-  vec3 texCol = texture(u_wrapTex, clamp(vec2(uRaw, vRaw), 0.002, 0.998)).rgb;
-  // Clean factory Pearl White margin when user adjusts edges inward past [0.0, 1.0]
-  float outOfBounds = max(
-    max(smoothstep(0.0, -0.015, uRaw), smoothstep(1.0, 1.015, uRaw)),
-    max(smoothstep(0.0, -0.015, vRaw), smoothstep(1.0, 1.015, vRaw))
-  );
-  return mix(texCol, vec3(0.955, 0.96, 0.97), clamp(outOfBounds, 0.0, 1.0));
+  // Full-bleed edge-to-edge clamping (zero outer margins)
+  return texture(u_wrapTex, clamp(vec2(uRaw, vRaw), 0.001, 0.999)).rgb;
 }
 
-// Engine 2 (5x Multi-View): 100% Parameterized 5-Panel Projection with Independent Scale, Shift & Edge Margin
+// Engine 2 (5x Multi-View): 100% Parameterized 5-Panel Projection with Independent Scale, Shift & Zero-Margin Default
 vec3 sampleMultiPanelWrap(vec3 normCoord, vec3 N, vec4 calA, vec4 calB, vec4 calC) {
   float sideScaleX    = calA.x; // 1. Side Width Scale
   float sideScaleY    = calA.y; // 2. Side Height Scale
@@ -1024,7 +1019,8 @@ vec3 sampleMultiPanelWrap(vec3 normCoord, vec3 N, vec4 calA, vec4 calB, vec4 cal
   vec3 blendW = pow(abs(N), vec3(sharpExp));
   blendW /= (blendW.x + blendW.y + blendW.z + 0.0001);
 
-  float minUV = clamp(edgeMargin, 0.002, 0.45);
+  // Half-texel safety floor (0.0005 on 2048px atlas) so edgeMargin = 0.000 is true 100% edge-to-edge full-bleed
+  float minUV = clamp(edgeMargin, 0.0005, 0.45);
   float maxUV = 1.0 - minUV;
 
   float sideRawX = (N.z >= 0.0 ? 1.0 - normCoord.x : normCoord.x) - sideOffsetX;
@@ -1221,22 +1217,22 @@ void main() {
 }
 `;
 
-const WRAP_CAL_STORAGE_KEY = "vws_wrap_calibration_store";
+const WRAP_CAL_STORAGE_KEY = "vws_wrap_calibration_store_v2";
 
 // ============================================================================
-// SYSTEM 1: SINGLE-SHEET CONTINUOUS WRAP CALIBRATION (1x Mode — All 10 Direct Coordinates)
+// SYSTEM 1: SINGLE-SHEET CONTINUOUS WRAP CALIBRATION (1x Mode — Full-Bleed Edge-to-Edge)
 // ============================================================================
 const DEFAULT_SINGLE_WRAP_CALIBRATION = {
-  uStart: 0.200,
-  uEnd: 0.728,
-  vCenter: 0.515,
+  uStart: 0.210,
+  uEnd: 0.715,
+  vCenter: 0.500,
   roofSpanV: 0.165,
-  sideSpanV: 0.310,
-  bodyTopY: 0.920,
-  bodyBottomY: 0.100,
+  sideSpanV: 0.335,
+  bodyTopY: 1.000,
+  bodyBottomY: 0.000,
   roofTaper: 0.720,
-  frontHoodPull: 0.255,
-  rearDoorPull: 0.185,
+  frontHoodPull: 0.285,
+  rearDoorPull: 0.210,
 };
 
 const SINGLE_WRAP_CALIBRATION_CONTROLS = [
@@ -1253,7 +1249,7 @@ const SINGLE_WRAP_CALIBRATION_CONTROLS = [
 ];
 
 // ============================================================================
-// SYSTEM 2: 5-PANEL MULTI-VIEW WRAP CALIBRATION (5x Mode — All 10 Direct Coordinates)
+// SYSTEM 2: 5-PANEL MULTI-VIEW WRAP CALIBRATION (5x Mode — Full-Bleed Edge-to-Edge)
 // ============================================================================
 const DEFAULT_MULTI_WRAP_CALIBRATION = {
   sideScaleX: 1.00,
@@ -1263,7 +1259,7 @@ const DEFAULT_MULTI_WRAP_CALIBRATION = {
   endScaleX: 1.00,
   endScaleY: 1.00,
   roofScale: 1.00,
-  edgeMargin: 0.015,
+  edgeMargin: 0.000,
   endOffsetY: 0.00,
   seamSharpness: 0.65,
 };
@@ -1325,6 +1321,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
   const [isSavingWrap, setIsSavingWrap] = useState(false);
   const [wrapModalError, setWrapModalError] = useState("");
   const [isAiPromptCopied, setIsAiPromptCopied] = useState(false);
+  const [isMultiAiPromptCopied, setIsMultiAiPromptCopied] = useState(false);
   const [isRefLightboxOpen, setIsRefLightboxOpen] = useState(false);
   const [previewWrap, setPreviewWrap] = useState(null);
   const [previewMultiViewSlot, setPreviewMultiViewSlot] = useState("atlas"); // "atlas" | "left" | "right" | "front" | "rear" | "top"
@@ -2350,7 +2347,9 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
   const targetVehicleLabel =
     activeModel?.credit?.title || activeModel?.name || "2016 Ford Transit Cargo Van";
 
-  const generatedAiPrompt = `Create a continuous, unfolded 2D vehicle wrap artwork skin (Connected 5-Panel Surface Net) for a ${targetVehicleLabel} matching the attached reference layout: place the ROOF horizontally in the center with the front of the vehicle pointing RIGHT, attach the DRIVER SIDE along the top roof edge unfolded upward (front pointing RIGHT), attach the PASSENGER SIDE along the bottom roof edge unfolded downward (front pointing RIGHT), attach the FRONT HOOD & BUMPER to the right roof edge, and attach the REAR DOORS to the left roof edge. Generate ONLY the flat 2D wrap skin in a 2:1 horizontal aspect ratio with ZERO outer margins (0px margin, full-bleed wrap colors extending completely to and past panel boundaries, no white wheel-arch cutouts, no 3D vehicle mockup, and no wireframe lines drawn over the artwork).\n\nWrap Design Description:\n`;
+  const generatedAiPrompt = `Create a continuous, unfolded 2D vehicle wrap artwork skin (Connected 5-Panel Surface Net) for a ${targetVehicleLabel} matching the attached reference layout: place the ROOF horizontally in the center with the front of the vehicle pointing RIGHT, attach the DRIVER SIDE along the top roof edge unfolded upward (front pointing RIGHT), attach the PASSENGER SIDE along the bottom roof edge unfolded downward (front pointing RIGHT), attach the FRONT HOOD & BUMPER to the right roof edge, and attach the REAR DOORS to the left roof edge. Generate ONLY the flat 2D wrap skin in a 2:1 horizontal aspect ratio strictly EDGE-TO-EDGE and FULL-BLEED with ZERO borders or margins (0px padding — the unfolded vehicle template and wrap artwork must touch all 4 outer edges of the canvas from X=0% to 100% and Y=0% to 100%, with wrap colors extending completely through panel boundaries, no white/empty background margins, no wheel-arch cutouts, no 3D vehicle mockup, and no wireframe lines drawn over the artwork).\n\nWrap Design Description:\n`;
+
+  const generatedMultiViewAiPrompt = `Create flat 2D orthographic vehicle wrap panel artwork for a ${targetVehicleLabel} (5-Panel Multi-View Wrap System: Driver Side, Passenger Side, Front Hood/Fascia, Rear Doors, and Roof). Generate each panel view strictly EDGE-TO-EDGE and FULL-BLEED with ZERO borders, ZERO padding, and ZERO empty margins (0px margin — the artwork must fill 100% of the image frame from edge to edge up to all 4 canvas boundaries, with no white or transparent background frame, no studio floor/environment, no wheel-arch cutouts, and no perspective distortion).\n\nWrap Design Description:\n`;
 
   function handleMultiViewFilePicked(slotId, file) {
     if (!file) return;
@@ -3708,7 +3707,7 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                   <div className="modal-field">
                     <div className="multi-view-header-row">
                       <span className="modal-label">Assign Views ({uploadedMultiViewCount}/5 uploaded)</span>
-                      <span className="multi-view-caption">Unassigned views stay Pearl White</span>
+                      <span className="multi-view-caption">Edge-to-edge full-bleed (0px margin) · Unassigned stay Pearl White</span>
                     </div>
 
                     <div className="multi-view-grid">
@@ -3770,6 +3769,32 @@ export default function WrapStudioClient({ initialModels, initialWraps }) {
                         );
                       })}
                     </div>
+                  </div>
+
+                  {/* Optional Minimal AI Prompt Card for 5x Multi-View Panel Generation */}
+                  <div className="ai-template-card">
+                    <div className="ai-template-meta">
+                      <span className="ai-template-title">Designing 5× Views with AI? (Optional)</span>
+                      <p className="ai-template-desc">
+                        Copy the ready-to-use prompt to generate full-bleed, zero-margin panel views in ChatGPT, Gemini, or Midjourney.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      className={`ai-copy-single-btn${isMultiAiPromptCopied ? " is-copied" : ""}`}
+                      onClick={() => {
+                        navigator.clipboard?.writeText(generatedMultiViewAiPrompt);
+                        setIsMultiAiPromptCopied(true);
+                        setTimeout(() => setIsMultiAiPromptCopied(false), 2000);
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1">
+                        <rect x="9" y="9" width="13" height="13" rx="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                      <span>{isMultiAiPromptCopied ? "✓ Prompt Copied" : "Copy 5× AI Prompt"}</span>
+                    </button>
                   </div>
                 </>
               )}
